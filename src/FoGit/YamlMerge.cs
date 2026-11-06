@@ -3,8 +3,8 @@ using System.Text.RegularExpressions;
 namespace FoGit;
 
 public static partial class YamlMerge {
-    [GeneratedRegex(@"^(\s*)(- )?FormKey: (\S+)\s*$")]
-    private static partial Regex ChildFormKey();
+    [GeneratedRegex(@"^(\s*)(- )?(FormKey|NavigationMesh): (\S+)\s*$")]
+    private static partial Regex ChildKey();
 
     [GeneratedRegex(@"^\s*- [0-9A-F]{6}:\S+\s*$")]
     private static partial Regex FormKeyListItem();
@@ -103,13 +103,20 @@ public static partial class YamlMerge {
         var children = new List<(string, List<string>)>();
         foreach (var item in items) {
             string? fk = null;
+            string? navmesh = null;
             foreach (var l in item) {
-                var m = ChildFormKey().Match(l);
-                if (m.Success && m.Groups[1].Value.Length + m.Groups[2].Value.Length <= 2) {
-                    fk = m.Groups[3].Value;
+                var m = ChildKey().Match(l);
+                if (!m.Success || m.Groups[1].Value.Length + m.Groups[2].Value.Length > 2) {
+                    continue;
+                }
+
+                if (m.Groups[3].Value == "FormKey") {
+                    fk = m.Groups[4].Value;
                     break;
                 }
+                navmesh ??= "NavigationMesh " + m.Groups[4].Value;
             }
+            fk ??= navmesh;
             if (fk == null) {
                 return null;
             }
@@ -121,6 +128,35 @@ public static partial class YamlMerge {
         }
 
         return (entry[0], children);
+    }
+
+    // Split fields of a nested block
+    private static List<string>? Body(List<string>? entry) {
+        if (entry == null || entry.Count < 2 || !entry[0].TrimEnd().EndsWith(':') || entry[1].TrimStart().StartsWith("- ")) {
+            return null;
+        }
+
+        var body = new List<string>();
+        for (int i = 1; i < entry.Count; i++) {
+            var l = entry[i];
+            if (l.Length == 0) {
+                body.Add(l);
+            } else if (l.StartsWith("  ")) {
+                body.Add(l[2..]);
+            } else {
+                return null;
+            }
+        }
+        return body;
+    }
+
+    private static void AppendBody(Result into, string header, Result body) {
+        into.Lines.Add(header);
+        foreach (var l in body.Lines) {
+            bool marker = l.StartsWith("<<<<<<< ") || l.StartsWith("||||||| ") || l == "=======" || l.StartsWith(">>>>>>> ");
+            into.Lines.Add(marker || l.Length == 0 ? l : "  " + l);
+        }
+        into.Conflicts += body.Conflicts;
     }
 
     private static bool Same(List<string>? a, List<string>? b) =>
@@ -178,7 +214,7 @@ public static partial class YamlMerge {
             return;
         }
         if (cur != null && inc != null) {
-            if (b == null && opt.KeepIdCollisions && unit.Contains(':')) {
+            if (b == null && opt.KeepIdCollisions && unit.Contains(':') && !unit.StartsWith("NavigationMesh ")) {
                 // Same new FormKey on both sides. Keep both, one gets renumbered after the merge
                 res.Lines.AddRange(cur);
                 res.Lines.AddRange(inc);
@@ -216,6 +252,18 @@ public static partial class YamlMerge {
                 MergeUnit(bv, cv, iv, res, opt, fk, (bb, cc, ii, rr) => Append(rr, TextMerge(bb, cc, ii, opt)));
             }
             return;
+        }
+
+        var curBody = Body(cur);
+        var incBody = Body(inc);
+        var baseBody = b.Count == 0 ? new List<string>() : Body(b);
+        if (curBody != null && incBody != null && baseBody != null && cur[0] == inc[0]) {
+            try {
+                AppendBody(res, cur[0], MergeFile(baseBody, curBody, incBody, opt));
+                return;
+            } catch (FormatException) {
+                // Not a plain mapping, fall back to line merge
+            }
         }
         Append(res, TextMerge(b, cur, inc, opt));
     }
@@ -327,6 +375,13 @@ public static partial class YamlMerge {
         var curList = SplitRecordList(cur);
         var incList = SplitRecordList(inc);
         if (curList == null || incList == null || curList.Value.header != incList.Value.header) {
+            var curBody = Body(cur);
+            var incBody = Body(inc);
+            if (curBody != null && incBody != null && cur[0] == inc[0]) {
+                var histBodies = histEntries.Select(Body).Where(h => h != null).Select(h => h!).ToList();
+                AppendBody(res, cur[0], MergeWithHistory(histBodies, curBody, incBody, opt));
+                return;
+            }
             Append(res, TextMerge(b, cur, inc, opt));
             return;
         }
