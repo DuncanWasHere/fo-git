@@ -129,6 +129,8 @@ public static class PluginOps {
             return res;
         }
 
+        MergeInfoMaps(master, plugin, res);
+
         // Copy records into the master
         var existing = master.EnumerateMajorRecords().Select(r => r.FormKey).ToHashSet();
         var newKeys = map.Values.Where(k => !remerged.Contains(k)).ToHashSet();
@@ -192,6 +194,46 @@ public static class PluginOps {
 
         FixCellBlocks(master);
         return res;
+    }
+
+    // Per-field merge for infomaps
+    private static void MergeInfoMaps(Fallout3Mod master, Fallout3Mod plugin, PluginMergeResult res) {
+        var maps = plugin.NavigationMeshInfoMaps.Records.ToList();
+        var target = master.NavigationMeshInfoMaps.Records.FirstOrDefault();
+        if (maps.Count == 0 || target == null) {
+            return;
+        }
+
+        var deletedNavmeshes = plugin.EnumerateMajorRecords().OfType<INavigationMeshGetter>()
+            .Where(n => n.IsDeleted).Select(n => n.FormKey).ToHashSet();
+        var infos = target.Infos.Where(i => !deletedNavmeshes.Contains(i.NavigationMesh.FormKey))
+            .GroupBy(i => i.NavigationMesh.FormKey).ToDictionary(g => g.Key, g => g.Last());
+        var connections = target.Connections.Where(c => !deletedNavmeshes.Contains(c.NavigationMesh.FormKey))
+            .GroupBy(c => c.NavigationMesh.FormKey).ToDictionary(g => g.Key, g => g.Last());
+        var updated = new HashSet<FormKey>();
+        foreach (var map in maps) {
+            foreach (var i in map.Infos) {
+                infos[i.NavigationMesh.FormKey] = i;
+                updated.Add(i.NavigationMesh.FormKey);
+            }
+            foreach (var c in map.Connections) {
+                connections[c.NavigationMesh.FormKey] = c;
+                updated.Add(c.NavigationMesh.FormKey);
+            }
+        }
+
+        // Sorted by FormID
+        var modOrder = master.ModHeader.MasterReferences.Select(m => m.Master).Append(master.ModKey).ToList();
+        (int, uint) Order(FormKey k) {
+            var idx = modOrder.IndexOf(k.ModKey);
+            return (idx < 0 ? int.MaxValue : idx, k.ID);
+        }
+        target.Infos.SetTo(infos.OrderBy(kv => Order(kv.Key)).Select(kv => kv.Value));
+        target.Connections.SetTo(connections.OrderBy(kv => Order(kv.Key)).Select(kv => kv.Value));
+
+        plugin.Remove(maps.Select(m => m.FormKey).ToHashSet());
+        res.Overrides++;
+        res.Details.Add($"merged navmesh info for {updated.Count} navmeshes into {target.FormKey}");
     }
 
     private static void Rekey(Fallout3Mod mod, List<IMajorRecord> recs, Dictionary<FormKey, FormKey> map) {
