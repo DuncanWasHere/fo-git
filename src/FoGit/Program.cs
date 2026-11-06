@@ -156,18 +156,13 @@ static class Cli {
         return 0;
     }
 
-    // New mod with no text yet. Round trip (text, plugin, text) to get Spriggit's one time cleanups
-    // like -0.0 to 0 into the first commit instead of the first real edit
     static int FirstGen(Repo r) {
         var tmp = r.TempDir("first");
         try {
-            Ui.Step("Pass 1 of 3. Converting the ESM to text");
             var pass1 = Path.Combine(tmp, "pass1");
             r.Serialize(r.MasterPath, pass1);
-            Ui.Step("Pass 2 of 3. Building an ESM from that text");
             var esm = Path.Combine(tmp, r.Config.Master);
             r.Deserialize(pass1, esm);
-            Ui.Step("Pass 3 of 3. Converting the new ESM to text");
             r.Serialize(esm, r.SpriggitDir);
 
             var backup = Path.Combine(r.StateDir, "backup", $"{Path.GetFileNameWithoutExtension(r.Config.Master)}-{DateTime.Now:yyyyMMdd-HHmmss}.esm");
@@ -175,12 +170,12 @@ static class Cli {
             File.Copy(r.MasterPath, backup);
             Repo.CopyWithRetry(esm, r.MasterPath);
             r.WriteBuildInfo(Repo.HashFolder(r.SpriggitDir));
-            Ui.Info($"Original {r.Config.Master} backed up in {Path.GetRelativePath(r.Root, backup)}.");
+            Ui.Info($"{r.Config.Master} backup created in {Path.GetRelativePath(r.Root, backup)}.");
         } finally {
             Repo.TryDelete(tmp);
         }
         RunTextCheck(r);
-        Ui.Good($"Created {r.Config.SpriggitFolder}. Commit it, and untrack the ESM with \"git rm --cached {r.Config.Master}\".");
+        Ui.Good($"Created Spriggit text in {r.Config.SpriggitFolder}.");
         return 0;
     }
 
@@ -543,18 +538,26 @@ static class Cli {
         }
     }
 
+    // True if the Spriggit text changed between the two commits
+    static bool TextChanged(Repo r, string from, string to) {
+        var (code, stdout, _) = r.GitRaw("diff", "--name-only", from, to, "--", r.Config.SpriggitFolder);
+        return code != 0 || stdout.Trim().Length > 0;
+    }
+
     static int Hook(Repo r, string[] args) {
         var name = args.FirstOrDefault();
         var folder = r.Config.SpriggitFolder;
         switch (name) {
             case "pre-commit": {
+                    // Only if Spriggit files are being committed
+                    if (r.Git("diff", "--cached", "--name-only", "--", folder).Length == 0) {
+                        return 0;
+                    }
+
                     if (r.GetBuildState() == Repo.BuildState.EsmEdited) {
                         Console.Error.WriteLine($"fo-git blocked this commit. {r.Config.Master} has edits that aren't saved to the Spriggit text.");
                         Console.Error.WriteLine("Run Tools/Save Master To Text.bat, then retry the commit. To discard the edits, run Tools/Rebuild Master.bat.");
                         return 1;
-                    }
-                    if (r.Git("diff", "--cached", "--name-only", "--", folder).Length == 0) {
-                        return 0;
                     }
 
                     var rep = TextOps.Check(r.SpriggitDir, r.Config, r.KnownIssues);
@@ -570,6 +573,10 @@ static class Cli {
                     return 1;
                 }
             case "post-merge":
+                if (!TextChanged(r, "ORIG_HEAD", "HEAD")) {
+                    return 0;
+                }
+
                 FixCollisions(r);
                 RunTextCheck(r, quiet: true);
                 AfterTextChange(r);
@@ -577,7 +584,7 @@ static class Cli {
             case "post-commit": {
                     // Only matters for merge commits made by hand after fixing conflicts
                     var parents = r.Git("rev-list", "--parents", "-n", "1", "HEAD").Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    if (parents.Length < 3) {
+                    if (parents.Length < 3 || !TextChanged(r, "HEAD^1", "HEAD")) {
                         return 0;
                     }
 
@@ -588,13 +595,17 @@ static class Cli {
                 }
             case "post-checkout":
                 // Third arg is 1 for a branch switch, 0 for a file checkout
-                if (args.ElementAtOrDefault(3) == "0") {
+                if (args.ElementAtOrDefault(3) == "0" || !TextChanged(r, args.ElementAtOrDefault(1) ?? "", args.ElementAtOrDefault(2) ?? "")) {
                     return 0;
                 }
 
                 AfterTextChange(r);
                 return 0;
             case "post-rewrite":
+                if (args.ElementAtOrDefault(1) != "rebase" || !TextChanged(r, "ORIG_HEAD", "HEAD")) {
+                    return 0;
+                }
+
                 AfterTextChange(r);
                 return 0;
             default:
