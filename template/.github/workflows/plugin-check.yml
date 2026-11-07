@@ -17,5 +17,13 @@ jobs:
             fo-git.json
             .gitattributes
           sparse-checkout-cone-mode: false
+      - uses: actions/cache@v4
+        with:
+          path: .fo-git/spriggit-cli
+          key: spriggit-${{ hashFiles('fo-git.json') }}
       - name: Check master text
         run: Tools/fo-git.exe check --text
+      - name: Build the ESM
+        run: Tools/fo-git.exe build-esm
+      - name: Check the ESM
+        run: Tools/fo-git.exe check --binary --round-trip

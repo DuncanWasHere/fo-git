@@ -252,8 +252,8 @@ public sealed class Repo {
         var folder = Config.SpriggitFolder.TrimEnd('/');
         try {
             // Drop everything outside the folder
-            Run(env, "rm", "-r", "-q", "-f", "--cached", "--ignore-unmatch", "--", ".", $":(exclude){folder}");
-            Run(env, "add", "-A", "--", folder);
+            Run(env, "rm", "--sparse", "-r", "-q", "-f", "--cached", "--ignore-unmatch", "--", ".", $":(exclude){folder}");
+            Run(env, "add", "--sparse", "-A", "--", folder);
             return Run(env, "write-tree", $"--prefix={folder}/");
         } finally {
             TryDelete(index);
