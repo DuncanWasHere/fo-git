@@ -91,7 +91,7 @@ static class Cli {
             Ui.Info($"{r.Config.Master} backup created in {Path.GetRelativePath(r.Root, backup)}.");
         }
         Ui.Step($"Building {r.Config.Master} from the Spriggit text.");
-        var hash = Repo.HashFolder(r.SpriggitDir);
+        var hash = r.TextTree();
         r.Deserialize(r.SpriggitDir, r.MasterPath);
         r.WriteBuildInfo(hash);
         Ui.Good($"{r.Config.Master} is up to date.");
@@ -139,14 +139,14 @@ static class Cli {
             return 0;
         }
         var info = r.ReadBuildInfo();
-        bool baseIsCurrent = info != null && info.TextHash == Repo.HashFolder(r.SpriggitDir);
+        bool baseIsCurrent = info != null && info.TextHash == r.TextTree();
         if (!baseIsCurrent) {
             Ui.Info("The text changed after the ESM was built. Merging.");
         }
 
         SaveEsmIntoText(r, r.MasterPath, baseIsCurrent);
         if (baseIsCurrent) {
-            r.WriteBuildInfo(Repo.HashFolder(r.SpriggitDir));
+            r.WriteBuildInfo(r.TextTree());
         } else {
             BuildEsm(r, discardEdits: true);
         }
@@ -169,7 +169,7 @@ static class Cli {
             Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
             File.Copy(r.MasterPath, backup);
             Repo.CopyWithRetry(esm, r.MasterPath);
-            r.WriteBuildInfo(Repo.HashFolder(r.SpriggitDir));
+            r.WriteBuildInfo(r.TextTree());
             Ui.Info($"{r.Config.Master} backup created in {Path.GetRelativePath(r.Root, backup)}.");
         } finally {
             Repo.TryDelete(tmp);
@@ -544,6 +544,31 @@ static class Cli {
         return code != 0 || stdout.Trim().Length > 0;
     }
 
+    static List<string> StagedMarkers(Repo r) {
+        var found = new List<string>();
+        var diff = r.Git("-c", "core.quotepath=off", "diff", "--cached", "-U0", "--no-color", "--", r.Config.SpriggitFolder);
+        string file = "";
+        int line = 0;
+        foreach (var raw in diff.Split('\n')) {
+            var l = raw.TrimEnd('\r');
+            if (l.StartsWith("+++ ")) {
+                // Git adds a tab after names with spaces
+                file = (l.StartsWith("+++ b/") ? l[6..] : l[4..]).TrimEnd('\t');
+            } else if (l.StartsWith("@@ ")) {
+                // @@ -a,b +c,d @@ where c is the first new line
+                var plus = l.Split(' ')[2];
+                line = int.Parse(plus[1..].Split(',')[0]);
+            } else if (l.StartsWith('+')) {
+                var t = l[1..];
+                if (t.StartsWith("<<<<<<< ") || t.StartsWith(">>>>>>> ") || t.StartsWith("||||||| ") || t == "=======") {
+                    found.Add($"{file} line {line}");
+                }
+                line++;
+            }
+        }
+        return found;
+    }
+
     static int Hook(Repo r, string[] args) {
         var name = args.FirstOrDefault();
         var folder = r.Config.SpriggitFolder;
@@ -554,20 +579,21 @@ static class Cli {
                         return 0;
                     }
 
-                    if (r.GetBuildState() == Repo.BuildState.EsmEdited) {
+                    if (r.EsmEdited()) {
                         Console.Error.WriteLine($"fo-git blocked this commit. {r.Config.Master} has edits that aren't saved to the Spriggit text.");
                         Console.Error.WriteLine("Run Tools/Save Master To Text.bat, then retry the commit. To discard the edits, run Tools/Rebuild Master.bat.");
                         return 1;
                     }
 
-                    var rep = TextOps.Check(r.SpriggitDir, r.Config, r.KnownIssues);
-                    if (rep.Errors.Count == 0) {
+                    // Only check staged changes here, Github handles the rest
+                    var markers = StagedMarkers(r);
+                    if (markers.Count == 0) {
                         return 0;
                     }
 
-                    Console.Error.WriteLine("fo-git blocked this commit. The Spriggit text has errors that would break the ESM.");
-                    foreach (var e in rep.Errors.Take(30)) {
-                        Console.Error.WriteLine("  " + e);
+                    Console.Error.WriteLine("fo-git blocked this commit. There are merge conflict markers left in the staged Spriggit text.");
+                    foreach (var m in markers.Take(30)) {
+                        Console.Error.WriteLine("  " + m);
                     }
 
                     return 1;

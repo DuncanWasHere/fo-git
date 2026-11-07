@@ -234,7 +234,42 @@ public sealed class Repo {
         return Convert.ToHexString(SHA256.HashData(fs))[..16];
     }
 
-    public sealed record BuildInfo(string TextHash, string EsmHash, long EsmSize, DateTime EsmWriteTime, string? Tree, DateTime BuiltAt);
+    // Git tree hash of the spriggit folder
+    public string TextTree() {
+        if (!Directory.Exists(SpriggitDir)) {
+            return "missing";
+        }
+
+        var index = Path.Combine(StateDir, "text-index");
+        var realIndex = Path.GetFullPath(Path.Combine(Root, Git("rev-parse", "--git-path", "index")));
+        if (File.Exists(realIndex)) {
+            File.Copy(realIndex, index, overwrite: true);
+        } else {
+            TryDelete(index);
+        }
+
+        var env = new Dictionary<string, string> { ["GIT_INDEX_FILE"] = index };
+        var folder = Config.SpriggitFolder.TrimEnd('/');
+        try {
+            // Drop everything outside the folder
+            Run(env, "rm", "-r", "-q", "-f", "--cached", "--ignore-unmatch", "--", ".", $":(exclude){folder}");
+            Run(env, "add", "-A", "--", folder);
+            return Run(env, "write-tree", $"--prefix={folder}/");
+        } finally {
+            TryDelete(index);
+        }
+    }
+
+    private string Run(Dictionary<string, string> env, params string[] args) {
+        var (code, stdout, stderr) = Proc.Run("git", args, Root, env);
+        if (code != 0) {
+            throw new UserError($"git {string.Join(' ', args)} failed.\n{stderr}{stdout}");
+        }
+
+        return stdout.Trim();
+    }
+
+    public sealed record BuildInfo(string TextHash, string EsmHash, long EsmSize, DateTime EsmWriteTime, DateTime BuiltAt);
 
     public BuildInfo? ReadBuildInfo() {
         if (!File.Exists(BuildInfoPath)) {
@@ -249,15 +284,8 @@ public sealed class Repo {
     }
 
     public void WriteBuildInfo(string textHash) {
-        string? tree = null;
-        try {
-            if (!IsDirty(Config.SpriggitFolder)) {
-                tree = HeadTree();
-            }
-        } catch (UserError) {
-        }
         var fi = new FileInfo(MasterPath);
-        var info = new BuildInfo(textHash, HashFile(MasterPath), fi.Length, fi.LastWriteTimeUtc, tree, DateTime.Now);
+        var info = new BuildInfo(textHash, HashFile(MasterPath), fi.Length, fi.LastWriteTimeUtc, DateTime.Now);
         File.WriteAllText(BuildInfoPath, JsonSerializer.Serialize(info, Json.Options));
     }
 
@@ -268,32 +296,38 @@ public sealed class Repo {
         EsmEdited,
     }
 
+    private bool EsmMatches(BuildInfo info) {
+        var fi = new FileInfo(MasterPath);
+        return (info.EsmSize == fi.Length && info.EsmWriteTime == fi.LastWriteTimeUtc) || HashFile(MasterPath) == info.EsmHash;
+    }
+
+    public bool EsmEdited() {
+        var info = ReadBuildInfo();
+        return info != null && File.Exists(MasterPath) && !EsmMatches(info);
+    }
+
     public BuildState GetBuildState() {
         var info = ReadBuildInfo();
         if (!File.Exists(MasterPath) || info == null) {
             return BuildState.Missing;
         }
 
-        var fi = new FileInfo(MasterPath);
-        bool esmSame = (info.EsmSize == fi.Length && info.EsmWriteTime == fi.LastWriteTimeUtc) || HashFile(MasterPath) == info.EsmHash;
-        if (!esmSame) {
+        if (!EsmMatches(info)) {
             return BuildState.EsmEdited;
         }
 
-        if (info.Tree != null && info.Tree == HeadTree() && !IsDirty(Config.SpriggitFolder)) {
+        var tree = TextTree();
+        if (tree == info.TextHash) {
             return BuildState.UpToDate;
         }
 
-        var hash = HashFolder(SpriggitDir);
-        if (hash != info.TextHash) {
-            return BuildState.TextChanged;
-        }
-        // Save the tree hash to make the next check faster
-        if (info.Tree == null && !IsDirty(Config.SpriggitFolder)) {
-            WriteBuildInfo(hash);
+        // Compatibility check for updating from older fo-git
+        if (info.TextHash.Length == 16 && HashFolder(SpriggitDir) == info.TextHash) {
+            WriteBuildInfo(tree);
+            return BuildState.UpToDate;
         }
 
-        return BuildState.UpToDate;
+        return BuildState.TextChanged;
     }
 }
 
