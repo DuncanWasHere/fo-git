@@ -402,9 +402,12 @@ public static partial class YamlMerge {
         int bestDist = int.MaxValue;
         foreach (var c in candidates) {
             var d = Distance(c, target);
-            if (d < bestDist) { best = c; bestDist = d; if (d == 0) {
-                    break;
-                }
+            if (d < bestDist) {
+                best = c;
+                bestDist = d;
+            }
+            if (d == 0) {
+                break;
             }
         }
         return best;

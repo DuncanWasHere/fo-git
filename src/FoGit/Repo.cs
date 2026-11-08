@@ -15,7 +15,7 @@ public sealed class Repo {
     public string LocalConfigPath => Path.Combine(Root, "fo-git.local.json");
 
     public string StateDir => Path.Combine(Root, ".fo-git");
-    public string MasterPath => Path.Combine(Root, Config.Master);
+    public string EsmPath => Path.Combine(Root, Config.Master);
     public string SpriggitDir => Path.Combine(Root, Norm(Config.SpriggitFolder));
     public string BuildInfoPath => Path.Combine(StateDir, "build-stamp.json");
     public string KnownIssuesPath => Path.Combine(Root, Norm(Config.KnownIssuesFile));
@@ -61,12 +61,9 @@ public sealed class Repo {
         return stdout.TrimEnd();
     }
 
-    public bool IsDirty(string relPath) => Git("status", "--porcelain", "--", relPath).Length > 0;
-
-    public string? HeadTree() {
-        var (code, stdout, _) = GitRaw("rev-parse", "HEAD:" + Config.SpriggitFolder);
-        return code == 0 ? stdout.Trim() : null;
-    }
+    // Parents of the HEAD commit. Two for a merge commit
+    public string[] HeadParents() =>
+        Git("rev-list", "--parents", "-n", "1", "HEAD").Split(' ', StringSplitOptions.RemoveEmptyEntries)[1..];
 
     // ---------------------------------------------------------------- Spriggit
 
@@ -110,23 +107,23 @@ public sealed class Repo {
         Ui.Info($"    (took {sw.Elapsed:m\\:ss})");
     }
 
-    public void Serialize(string pluginPath, string targetDir) {
+    public void GenerateText(string esmPath, string textDir) {
         var tmp = TempDir("ser");
         try {
-            RunSpriggit("serialize", "-i", pluginPath, "-o", tmp, "-g", "FalloutNV",
+            RunSpriggit("serialize", "-i", esmPath, "-o", tmp, "-g", "FalloutNV",
                 "-p", Config.SpriggitPackage, "-v", Config.SpriggitVersion, "-u", "true");
-            SyncFolder(tmp, targetDir);
+            SyncFolder(tmp, textDir);
         } finally {
             TryDelete(tmp);
         }
     }
 
-    public void Deserialize(string sourceDir, string pluginPath) {
+    public void BuildEsm(string textDir, string esmPath) {
         var tmpDir = TempDir("de");
-        var tmp = Path.Combine(tmpDir, Path.GetFileName(pluginPath));
+        var tmp = Path.Combine(tmpDir, Path.GetFileName(esmPath));
         try {
-            RunSpriggit("deserialize", "-i", sourceDir, "-o", tmp, "-b", "0");
-            CopyWithRetry(tmp, pluginPath);
+            RunSpriggit("deserialize", "-i", textDir, "-o", tmp, "-b", "0");
+            CopyWithRetry(tmp, esmPath);
         } finally {
             TryDelete(tmpDir);
         }
@@ -148,6 +145,15 @@ public sealed class Repo {
         var d = Path.Combine(StateDir, "tmp", prefix + "-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(d);
         return d;
+    }
+
+    public void WithTempDir(string prefix, Action<string> action) {
+        var dir = TempDir(prefix);
+        try {
+            action(dir);
+        } finally {
+            TryDelete(dir);
+        }
     }
 
     public static void SyncFolder(string src, string dst) {
@@ -284,8 +290,8 @@ public sealed class Repo {
     }
 
     public void WriteBuildInfo(string textHash) {
-        var fi = new FileInfo(MasterPath);
-        var info = new BuildInfo(textHash, HashFile(MasterPath), fi.Length, fi.LastWriteTimeUtc, DateTime.Now);
+        var fi = new FileInfo(EsmPath);
+        var info = new BuildInfo(textHash, HashFile(EsmPath), fi.Length, fi.LastWriteTimeUtc, DateTime.Now);
         File.WriteAllText(BuildInfoPath, JsonSerializer.Serialize(info, Json.Options));
     }
 
@@ -297,18 +303,25 @@ public sealed class Repo {
     }
 
     private bool EsmMatches(BuildInfo info) {
-        var fi = new FileInfo(MasterPath);
-        return (info.EsmSize == fi.Length && info.EsmWriteTime == fi.LastWriteTimeUtc) || HashFile(MasterPath) == info.EsmHash;
+        var fi = new FileInfo(EsmPath);
+        return (info.EsmSize == fi.Length && info.EsmWriteTime == fi.LastWriteTimeUtc) || HashFile(EsmPath) == info.EsmHash;
     }
 
+    // Edited since fo-git built it
     public bool EsmEdited() {
         var info = ReadBuildInfo();
-        return info != null && File.Exists(MasterPath) && !EsmMatches(info);
+        return info != null && File.Exists(EsmPath) && !EsmMatches(info);
+    }
+
+    // Edited since fo-git built it, or not built by fo-git at all
+    public bool EsmHasEdits() {
+        var info = ReadBuildInfo();
+        return File.Exists(EsmPath) && (info == null || !EsmMatches(info));
     }
 
     public BuildState GetBuildState() {
         var info = ReadBuildInfo();
-        if (!File.Exists(MasterPath) || info == null) {
+        if (!File.Exists(EsmPath) || info == null) {
             return BuildState.Missing;
         }
 
@@ -328,181 +341,5 @@ public sealed class Repo {
         }
 
         return BuildState.TextChanged;
-    }
-}
-
-public static class Proc {
-    public static string Quote(string a) => a.Contains(' ') || a.Contains('"') ? "\"" + a.Replace("\"", "\\\"") + "\"" : a;
-
-    public static (int, string, string) Run(string exe, IEnumerable<string> args, string cwd, IDictionary<string, string>? env = null) {
-        var psi = new ProcessStartInfo(exe) {
-            WorkingDirectory = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            StandardOutputEncoding = Encoding.UTF8,
-        };
-        psi.Environment["FOGIT_NOHOOK"] = "1";
-        if (env != null) {
-            foreach (var (k, v) in env) {
-                psi.Environment[k] = v;
-            }
-        }
-
-        foreach (var a in args) {
-            psi.ArgumentList.Add(a);
-        }
-
-        using var p = Process.Start(psi)!;
-        var stdout = p.StandardOutput.ReadToEndAsync();
-        var stderr = p.StandardError.ReadToEndAsync();
-        p.WaitForExit();
-        return (p.ExitCode, stdout.Result, stderr.Result);
-    }
-
-    public static int RunStreaming(string exe, IEnumerable<string> args, string cwd, Action<string> onLine) {
-        var psi = new ProcessStartInfo(exe) {
-            WorkingDirectory = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
-        foreach (var a in args) {
-            psi.ArgumentList.Add(a);
-        }
-
-        using var p = new Process { StartInfo = psi };
-        p.OutputDataReceived += (_, e) => {
-            if (e.Data != null) {
-                onLine(e.Data);
-            }
-        };
-        p.ErrorDataReceived += (_, e) => {
-            if (e.Data != null) {
-                onLine("ERR " + e.Data);
-            }
-        };
-        p.Start();
-        p.BeginOutputReadLine();
-        p.BeginErrorReadLine();
-        p.WaitForExit();
-        return p.ExitCode;
-    }
-}
-
-public sealed class GitBlobReader : IDisposable {
-    private readonly Process _git;
-    private readonly Stream _stdout;
-
-    public GitBlobReader(string repoRoot) {
-        var psi = new ProcessStartInfo("git") {
-            WorkingDirectory = repoRoot,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
-        psi.ArgumentList.Add("cat-file");
-        psi.ArgumentList.Add("--batch");
-        psi.Environment["FOGIT_NOHOOK"] = "1";
-        _git = Process.Start(psi)!;
-        _stdout = _git.StandardOutput.BaseStream;
-    }
-
-    public string? Read(string commit, string path) {
-        _git.StandardInput.Write($"{commit}:{path}\n");
-        _git.StandardInput.Flush();
-        var header = ReadLine();
-        if (header.EndsWith(" missing") || header.EndsWith(" ambiguous")) {
-            return null;
-        }
-
-        var parts = header.Split(' ');
-        if (parts.Length < 3 || parts[1] != "blob") {
-            throw new InvalidOperationException("Unexpected output from git cat-file. " + header);
-        }
-
-        var size = int.Parse(parts[2]);
-        var buf = new byte[size];
-        int read = 0;
-        while (read < size) {
-            var n = _stdout.Read(buf, read, size - read);
-            if (n <= 0) {
-                throw new EndOfStreamException();
-            }
-
-            read += n;
-        }
-        _stdout.ReadByte(); // trailing newline
-        return Encoding.UTF8.GetString(buf).Replace("\r\n", "\n");
-    }
-
-    private string ReadLine() {
-        var sb = new StringBuilder();
-        int b;
-        while ((b = _stdout.ReadByte()) >= 0 && b != '\n') {
-            sb.Append((char)b);
-        }
-
-        return sb.ToString();
-    }
-
-    public void Dispose() {
-        try {
-            _git.StandardInput.Close();
-            _git.WaitForExit(2000);
-        } catch {
-        }
-        _git.Dispose();
-    }
-}
-
-public static class Ui {
-    public static int Warnings { get; private set; }
-    public static int Errors { get; private set; }
-
-    public static bool Window { get; set; }
-
-    public static void Info(string msg) => Console.WriteLine(msg);
-
-    public static void Step(string msg) {
-        Console.WriteLine();
-        Console.WriteLine("== " + msg);
-    }
-
-    public static void Warn(string msg) {
-        Warnings++;
-        Write(ConsoleColor.Yellow, "[warning] " + msg);
-    }
-
-    public static void Error(string msg) {
-        Errors++;
-        Write(ConsoleColor.Red, "[error] " + msg);
-    }
-
-    public static void Good(string msg) => Write(ConsoleColor.Green, msg);
-
-    private static void Write(ConsoleColor c, string msg) {
-        var old = Console.ForegroundColor;
-        try {
-            Console.ForegroundColor = c;
-            Console.WriteLine(msg);
-        } finally {
-            Console.ForegroundColor = old;
-        }
-    }
-
-    public static void Finish() {
-        if (!Window || Console.IsInputRedirected) {
-            return;
-        }
-
-        Console.WriteLine();
-        if (Warnings > 0 || Errors > 0) {
-            Console.WriteLine($"Finished with {Errors} error(s) and {Warnings} warning(s). Press any key to close.");
-        } else {
-            Good("Done. Press any key to close.");
-        }
-        Console.ReadKey(true);
     }
 }

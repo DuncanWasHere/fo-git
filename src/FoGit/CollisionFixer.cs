@@ -12,12 +12,12 @@ public static class CollisionFixer {
 
     public static Report Run(Repo r) {
         var report = new Report();
-        var parents = r.Git("rev-list", "--parents", "-n", "1", "HEAD").Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parents.Length < 3) {
+        var parents = r.HeadParents();
+        if (parents.Length < 2) {
             return report;
         }
 
-        string current = parents[1], incoming = parents[2];
+        string current = parents[0], incoming = parents[1];
         var (mbCode, mbOut, _) = r.GitRaw("merge-base", current, incoming);
         if (mbCode != 0) {
             return report;
@@ -56,7 +56,7 @@ public static class CollisionFixer {
         foreach (var (fk, locs) in collisions) {
             var where = string.Join(" and ", locs.Select(l => l.File).Distinct());
             if (!addedOnCurrent.Contains(fk)) {
-                report.Warnings.Add($"FormID {fk} is used by more than one form ({where}) on a master branch. This should never happen unless someone forgot to set up the git hooks properly!.");
+                report.Warnings.Add($"FormID {fk} is used by more than one form ({where}) on the main branch. This should never happen unless someone forgot to set up the git hooks properly!.");
                 continue;
             }
             var defFiles = currentDefs[fk];

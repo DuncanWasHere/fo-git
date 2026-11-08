@@ -57,7 +57,7 @@ public static partial class TextOps {
         public ScanResult Scan = null!;
     }
 
-    public static TextReport Check(string spriggitDir, RepoConfig cfg, HashSet<string> known) {
+    public static TextReport Validate(string spriggitDir, RepoConfig cfg, HashSet<string> known) {
         var rep = new TextReport { Scan = Scan(spriggitDir) };
         var scan = rep.Scan;
         rep.Records = scan.Defs.Count;
@@ -90,7 +90,7 @@ public static partial class TextOps {
     }
 
     public static string IssueKey(string message) {
-        var m = Regex.Match(message, @"Dangling reference[.:] ([0-9A-F]{6}:\S+)");
+        var m = Regex.Match(message, @"Dangling reference[.:] (?:Form )?([0-9A-F]{6}:\S+)");
         if (m.Success) {
             return "Dangling reference " + m.Groups[1].Value.TrimEnd(',', '.');
         }

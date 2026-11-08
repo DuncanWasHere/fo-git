@@ -62,7 +62,7 @@ public static class PluginOps {
         foreach (var r in plugin.EnumerateMajorRecords()) {
             var owner = r.FormKey.ModKey;
             if (owner != pluginKey && !validOwners.Contains(owner)) {
-                res.Errors.Add($"{Describe(r)} belongs to {owner}, and {masterKey} can't have {owner} as a master.");
+                res.Errors.Add($"{Describe(r)} is added by {owner}, and {masterKey} can't have {owner} as a master.");
             }
         }
         if (res.Errors.Count > 0) {
@@ -120,7 +120,7 @@ public static class PluginOps {
         foreach (var r in plugin.EnumerateMajorRecords()) {
             foreach (var l in r.EnumerateFormLinks()) {
                 if (!l.IsNull && !validOwners.Contains(l.FormKey.ModKey)) {
-                    res.Errors.Add($"{Describe(r)} points at {l.FormKey}, but {l.FormKey.ModKey} isn't a master of {masterKey}.");
+                    res.Errors.Add($"{Describe(r)} references {l.FormKey}, but {l.FormKey.ModKey} isn't a master of {masterKey}.");
                 }
             }
         }
@@ -295,13 +295,13 @@ public static class PluginOps {
         }
     }
 
-    public sealed class CheckReport {
+    public sealed class ValidationReport {
         public readonly List<string> Errors = new();
         public readonly List<string> Warnings = new();
     }
 
-    public static CheckReport CheckBinary(IFallout3ModGetter master, IReadOnlyList<string> masterSearchPaths) {
-        var rep = new CheckReport();
+    public static ValidationReport ValidateEsm(IFallout3ModGetter master, IReadOnlyList<string> masterSearchPaths) {
+        var rep = new ValidationReport();
         var masterKey = master.ModKey;
         var declared = master.ModHeader.MasterReferences.Select(m => m.Master).ToHashSet();
 
