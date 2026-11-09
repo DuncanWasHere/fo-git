@@ -112,7 +112,7 @@ public sealed class Repo {
         try {
             RunSpriggit("serialize", "-i", esmPath, "-o", tmp, "-g", "FalloutNV",
                 "-p", Config.SpriggitPackage, "-v", Config.SpriggitVersion, "-u", "true");
-            SyncFolder(tmp, textDir);
+            SyncFolder(tmp, textDir, SpriggitText.Normalize);
         } finally {
             TryDelete(tmp);
         }
@@ -156,7 +156,7 @@ public sealed class Repo {
         }
     }
 
-    public static void SyncFolder(string src, string dst) {
+    public static void SyncFolder(string src, string dst, Func<byte[], byte[]>? transform = null) {
         Directory.CreateDirectory(dst);
         var srcFiles = Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories)
             .Select(f => Path.GetRelativePath(src, f)).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -166,7 +166,8 @@ public sealed class Repo {
             }
         }
         Parallel.ForEach(srcFiles, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, rel => {
-            WriteIfChanged(Path.Combine(dst, rel), StripCr(File.ReadAllBytes(Path.Combine(src, rel))));
+            var content = StripCr(File.ReadAllBytes(Path.Combine(src, rel)));
+            WriteIfChanged(Path.Combine(dst, rel), transform == null ? content : transform(content));
         });
         DeleteEmptyFolders(dst);
     }

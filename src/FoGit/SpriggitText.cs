@@ -12,6 +12,56 @@ public static partial class SpriggitText {
         public readonly List<string> Notes = new();
     }
 
+    // "Key: >", "Key: |+", "Key: -", etc.
+    [GeneratedRegex(@"^( *)(- )?[^ :#][^:]*: [>|][+-]?$")]
+    private static partial Regex BlockScalarHeader();
+
+    // Numeric value
+    [GeneratedRegex(@"^[-+0-9., Ee]+$")]
+    private static partial Regex NumberList();
+
+    [GeneratedRegex(@"(?<![\d.])-0(?![\d.Ee])")]
+    private static partial Regex NegativeZero();
+
+    public static byte[] Normalize(byte[] content) {
+        var text = Encoding.UTF8.GetString(content);
+        if (!text.Contains("-0") && !text.Contains(": >\n")) {
+            return content;
+        }
+
+        var lines = text.Split('\n');
+        int blockIndent = -1;
+        for (int i = 0; i < lines.Length; i++) {
+            var l = lines[i];
+            int indent = l.Length - l.TrimStart(' ').Length;
+            // Text inside a block scalar stays as is
+            if (blockIndent >= 0) {
+                if (l.Length == 0 || indent > blockIndent) {
+                    continue;
+                }
+                blockIndent = -1;
+            }
+
+            var header = BlockScalarHeader().Match(l);
+            if (header.Success) {
+                blockIndent = indent + header.Groups[2].Length;
+                if (l.EndsWith(": >")) {
+                    lines[i] = l + "+";
+                }
+                continue;
+            }
+
+            var colon = l.IndexOf(": ", StringComparison.Ordinal);
+            var valueStart = colon >= 0 ? colon + 2 : l.TrimStart().StartsWith("- ") ? indent + 2 : -1;
+            if (valueStart < 0 || valueStart >= l.Length || !NumberList().IsMatch(l[valueStart..])) {
+                continue;
+            }
+
+            lines[i] = l[..valueStart] + NegativeZero().Replace(l[valueStart..], "0");
+        }
+        return Encoding.UTF8.GetBytes(string.Join('\n', lines));
+    }
+
     public static string Key(string rel) =>
         string.Join('/', rel.Split('/').Select(seg => {
             var m = NamedSegment().Match(seg);
