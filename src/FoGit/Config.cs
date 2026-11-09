@@ -41,6 +41,9 @@ public sealed class LocalConfig {
 
     public List<string> MasterSearchPaths { get; set; } = new();
 
+    // Number of ESM builds to store in .fo-git/esm-cache, 0 disables caching
+    public int EsmCacheSize { get; set; } = 8;
+
     public static LocalConfig Load(string path) =>
         File.Exists(path)
             ? JsonSerializer.Deserialize<LocalConfig>(File.ReadAllText(path), Json.Options) ?? new LocalConfig()

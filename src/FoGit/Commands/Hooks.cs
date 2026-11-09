@@ -18,7 +18,7 @@ static partial class Cli {
                 break;
             case "post-checkout":
                 // Third arg is 1 for branch switch, 0 for file checkout
-                if (args.ElementAtOrDefault(3) != "0" && TextChanged(r, args.ElementAtOrDefault(1) ?? "", args.ElementAtOrDefault(2) ?? "")) {
+                if (args.ElementAtOrDefault(3) != "0" && !r.RebaseInProgress() && TextChanged(r, args.ElementAtOrDefault(1) ?? "", args.ElementAtOrDefault(2) ?? "")) {
                     AfterTextChange(r);
                 }
                 break;
@@ -38,9 +38,18 @@ static partial class Cli {
         }
 
         if (r.EsmEdited()) {
-            Console.Error.WriteLine($"fo-git blocked this commit. {r.Config.Master} has edits that aren't in the Spriggit text.");
-            Console.Error.WriteLine($"Run Tools/{GenerateBat}, then retry the commit. To discard the edits, run Tools/{BuildBat}.");
-            return 1;
+            switch (AskAboutEdits($"{r.Config.Master} has changes that aren't reflected in the Spriggit text.", canAbort: true)) {
+                case EditChoice.Generate:
+                    GenerateText(r);
+                    Console.Error.WriteLine("Generated the Spriggit text. Stage the changes you want to keep and commit again.");
+                    return 1;
+                case EditChoice.Rebuild:
+                    BuildEsm(r, discardEdits: true);
+                    break;
+                default:
+                    Console.Error.WriteLine($"fo-git blocked this commit. Run Tools/{GenerateBat}, then retry the commit. To discard the edits, run Tools/{BuildBat}.");
+                    return 1;
+            }
         }
 
         // Only check staged changes here, GitHub handles the rest
@@ -68,10 +77,14 @@ static partial class Cli {
             case Repo.BuildState.UpToDate:
                 return;
             case Repo.BuildState.EsmEdited:
-                Ui.Warn($"The Spriggit text changed, but {r.Config.Master} has edits that aren't in the text and won't be built. Run \"{GenerateBat}\" to merge your edits with the new text.");
+                if (ResolveEdits(r, $"The Spriggit text changed, but {r.Config.Master} has changes that aren't reflected in the text.", canAbort: false) == EditChoice.Leave) {
+                    Ui.Info($"The ESM wasn't built. Run \"{GenerateBat}\" to merge your edits with the new text, or \"{BuildBat}\" to discard them.");
+                }
                 return;
             case Repo.BuildState.Missing when File.Exists(r.EsmPath):
-                Ui.Warn($"{r.Config.Master} wasn't built by fo-git. Run \"{GenerateBat}\" to keep its edits, or \"{BuildBat}\" to replace it.");
+                if (ResolveEdits(r, $"{r.Config.Master} wasn't built by fo-git.", canAbort: false) == EditChoice.Leave) {
+                    Ui.Info($"Run \"{GenerateBat}\" to keep its edits, or \"{BuildBat}\" to replace it.");
+                }
                 return;
             default:
                 BuildEsm(r);

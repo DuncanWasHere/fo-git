@@ -138,6 +138,7 @@ static partial class Cli {
             Repo.BuildState.EsmEdited => $"has edits that aren't reflected in the Spriggit text. Run {GenerateBat}.",
             _ => "",
         });
+        Ui.Info($"ESM cache      {r.CachedEsmCount} of {r.Local.EsmCacheSize} build(s)");
         return 0;
     }
 

@@ -13,9 +13,13 @@ static partial class Cli {
 
             BackupEsm(r);
         }
-        Ui.Step($"Building {r.Config.Master} from the Spriggit text.");
         var tree = r.TextTree();
-        r.BuildEsm(r.SpriggitDir, r.EsmPath);
+        if (r.RestoreCachedEsm(tree)) {
+            Ui.Step($"Restored {r.Config.Master} from an earlier build.");
+        } else {
+            Ui.Step($"Building {r.Config.Master} from the Spriggit text.");
+            r.BuildEsm(r.SpriggitDir, r.EsmPath);
+        }
         r.WriteBuildInfo(tree);
         Ui.Good($"{r.Config.Master} is up to date.");
     }
@@ -38,6 +42,30 @@ static partial class Cli {
         }
         BuildEsm(r, discard);
         return 0;
+    }
+
+    enum EditChoice {
+        Generate,
+        Rebuild,
+        Leave,
+    }
+
+    // For ESM changes that aren't in the Spriggit text
+    static EditChoice AskAboutEdits(string problem, bool canAbort) =>
+        Ui.Confirm(problem, "Discard changes in the ESM?", canAbort) switch {
+            true => EditChoice.Rebuild,
+            false => EditChoice.Generate,
+            null => EditChoice.Leave,
+        };
+
+    static EditChoice ResolveEdits(Repo r, string problem, bool canAbort) {
+        var choice = AskAboutEdits(problem, canAbort);
+        if (choice == EditChoice.Generate) {
+            GenerateText(r);
+        } else if (choice == EditChoice.Rebuild) {
+            BuildEsm(r, discardEdits: true);
+        }
+        return choice;
     }
 
     static void BackupEsm(Repo r) {

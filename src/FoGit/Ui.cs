@@ -35,6 +35,48 @@ public static class Ui {
         }
     }
 
+    public static bool? Confirm(string problem, string prompt, bool canAbort) {
+        Warnings++;
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CI"))) {
+            Write(ConsoleColor.Yellow, "[warning] " + problem);
+            return null;
+        }
+
+        if (!Console.IsInputRedirected) {
+            var old = Console.ForegroundColor;
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Write($"[warning] {problem} {prompt} [Y/N]" + (canAbort ? " [Esc to abort] " : " "));
+            Console.ForegroundColor = old;
+            while (true) {
+                var k = Console.ReadKey(true);
+                if (k.Key == ConsoleKey.Y || k.Key == ConsoleKey.N) {
+                    Console.WriteLine(k.Key);
+                    return k.Key == ConsoleKey.Y;
+                }
+                if (k.Key == ConsoleKey.Escape && canAbort) {
+                    Console.WriteLine("Esc");
+                    return null;
+                }
+            }
+        }
+
+        Write(ConsoleColor.Yellow, "[warning] " + problem);
+        if (!OperatingSystem.IsWindows()) {
+            return null;
+        }
+
+        var text = $"{problem}\n\n{prompt}" + (canAbort ? "\n\nPress Cancel to abort." : "");
+        const uint yesNoCancel = 0x3, yesNo = 0x4, warning = 0x30, foreground = 0x10000, topmost = 0x40000;
+        return MessageBoxW(IntPtr.Zero, text, "fo-git", (canAbort ? yesNoCancel : yesNo) | warning | foreground | topmost) switch {
+            6 => true,
+            7 => false,
+            _ => null,
+        };
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
+
     public static void Finish() {
         if (!Window || Console.IsInputRedirected) {
             return;

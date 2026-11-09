@@ -14,8 +14,10 @@ static partial class Cli {
 
         // ESM needs to match the Spriggit text before merging
         if (r.EsmHasEdits()) {
-            Ui.Info($"{r.Config.Master} has edits that aren't reflected in the Spriggit text. Regenerating it first!");
-            GenerateText(r);
+            if (ResolveEdits(r, $"{r.Config.Master} has changes that aren't reflected in the Spriggit text, or wasn't built by fo-git.", canAbort: true) == EditChoice.Leave) {
+                Cancelled();
+                return 1;
+            }
         } else if (r.GetBuildState() != Repo.BuildState.UpToDate) {
             BuildEsm(r);
         }

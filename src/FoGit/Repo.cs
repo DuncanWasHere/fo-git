@@ -294,7 +294,56 @@ public sealed class Repo {
         var fi = new FileInfo(EsmPath);
         var info = new BuildInfo(textHash, HashFile(EsmPath), fi.Length, fi.LastWriteTimeUtc, DateTime.Now);
         File.WriteAllText(BuildInfoPath, JsonSerializer.Serialize(info, Json.Options));
+        CacheEsm(textHash);
     }
+
+    // ---------------------------------------------------------------- ESM cache
+
+    // Copies of the ESM for each text git tree
+    public string EsmCacheDir => Path.Combine(StateDir, "esm-cache");
+
+    private string CachedEsmPath(string tree) => Path.Combine(EsmCacheDir, Config.SpriggitVersion, $"{tree}-{Config.Master}");
+
+    public int CachedEsmCount => Directory.Exists(EsmCacheDir)
+        ? Directory.EnumerateFiles(EsmCacheDir, "*", SearchOption.AllDirectories).Count()
+        : 0;
+
+    public bool RestoreCachedEsm(string tree) {
+        var cached = CachedEsmPath(tree);
+        if (Local.EsmCacheSize <= 0 || !File.Exists(cached)) {
+            return false;
+        }
+
+        CopyWithRetry(cached, EsmPath);
+        // Creation time is used as the last use time for pruning
+        File.SetCreationTimeUtc(cached, DateTime.UtcNow);
+        return true;
+    }
+
+    private void CacheEsm(string tree) {
+        if (Local.EsmCacheSize <= 0 || tree == "missing" || !File.Exists(EsmPath)) {
+            return;
+        }
+
+        var cached = CachedEsmPath(tree);
+        if (!File.Exists(cached)) {
+            Directory.CreateDirectory(Path.GetDirectoryName(cached)!);
+            var tmp = cached + ".tmp";
+            File.Copy(EsmPath, tmp, overwrite: true);
+            File.Move(tmp, cached, overwrite: true);
+        }
+        File.SetCreationTimeUtc(cached, DateTime.UtcNow);
+
+        var old = new DirectoryInfo(EsmCacheDir).EnumerateFiles("*", SearchOption.AllDirectories)
+            .OrderByDescending(f => f.CreationTimeUtc).Skip(Local.EsmCacheSize).ToList();
+        foreach (var f in old) {
+            TryDelete(f.FullName);
+        }
+        DeleteEmptyFolders(EsmCacheDir);
+    }
+
+    public bool RebaseInProgress() =>
+        new[] { "rebase-merge", "rebase-apply" }.Any(d => Directory.Exists(Path.GetFullPath(Path.Combine(Root, Git("rev-parse", "--git-path", d)))));
 
     public enum BuildState {
         Missing,
