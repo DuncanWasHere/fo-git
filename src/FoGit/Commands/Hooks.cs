@@ -143,18 +143,27 @@ static partial class Cli {
         }
 
         var rep = CollisionFixer.Run(r);
+        var vars = ScriptVars.FixMerge(r, rep.OldToNew);
         File.AppendAllLines(fixedLog, new[] { head });
-        foreach (var w in rep.Warnings) {
+        foreach (var w in rep.Warnings.Concat(vars.Warnings)) {
             Ui.Warn(w);
         }
 
-        if (rep.Renumbered.Count == 0) {
-            return false;
+        if (rep.Renumbered.Count > 0) {
+            Ui.Warn("The last merge added records with the same FormIDs as new records on this branch. Renumbered the ones from this branch.");
+            foreach (var n in rep.Renumbered) {
+                Ui.Info("  " + n);
+            }
+        }
+        if (vars.Fixed.Count > 0) {
+            Ui.Warn("The last merge changed script variable indices referenced by conditions. Updated the conditions.");
+            foreach (var n in vars.Fixed) {
+                Ui.Info("  " + n);
+            }
         }
 
-        Ui.Warn("The last merge added records with the same FormIDs as new records on this branch. Renumbered the ones from this branch.");
-        foreach (var n in rep.Renumbered) {
-            Ui.Info("  " + n);
+        if (rep.Renumbered.Count == 0 && vars.Fixed.Count == 0) {
+            return false;
         }
 
         Ui.Info($"Commit the changes in {r.Config.SpriggitFolder} now!");

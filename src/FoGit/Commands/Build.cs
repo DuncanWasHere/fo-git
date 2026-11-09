@@ -131,15 +131,17 @@ static partial class Cli {
         return 0;
     }
 
-    static void GenerateTextFromEsm(Repo r, string esmPath, bool baseIsCurrent) {
+    static SpriggitText.ApplyReport GenerateTextFromEsm(Repo r, string esmPath, bool baseIsCurrent) {
         Ui.Step("Generating Spriggit text from the ESM");
+        SpriggitText.ApplyReport rep = null!;
         r.WithTempDir("text", tmp => {
             r.GenerateText(esmPath, tmp);
             Ui.Step("Updating " + r.Config.SpriggitFolder);
-            var rep = SpriggitText.Apply(r, tmp, baseIsCurrent);
+            rep = SpriggitText.Apply(r, tmp, baseIsCurrent);
             Ui.Info($"  {rep.Changed} changed, {rep.Added} added, {rep.Removed} removed record files");
             ShowNotes(r, rep.Notes);
         });
+        return rep;
     }
 
     static void ShowNotes(Repo r, List<string> notes) {

@@ -18,6 +18,7 @@ public static partial class TextOps {
         public readonly Dictionary<string, List<Location>> Defs = new(StringComparer.OrdinalIgnoreCase);
         public readonly Dictionary<string, Location> Refs = new(StringComparer.OrdinalIgnoreCase);
         public readonly List<Location> Markers = new();
+        public readonly ScriptVars Vars = new();
     }
 
     public static ScanResult Scan(string spriggitDir) {
@@ -25,8 +26,10 @@ public static partial class TextOps {
         var root = Path.GetFullPath(spriggitDir);
         foreach (var file in Directory.EnumerateFiles(root, "*.yaml", SearchOption.AllDirectories)) {
             var rel = Path.GetRelativePath(root, file).Replace('\\', '/');
+            var lines = File.ReadAllLines(file);
+            res.Vars.Read(rel, lines);
             int lineNo = 0;
-            foreach (var line in File.ReadLines(file)) {
+            foreach (var line in lines) {
                 lineNo++;
                 if (line.Length > 0 && line[0] is '<' or '>' or '=' or '|' && ConflictMarker().IsMatch(line)) {
                     res.Markers.Add(new Location(rel, lineNo));
@@ -80,7 +83,28 @@ public static partial class TextOps {
                 Add(rep, known, $"{where.File} references form {fk}, but {mod} isn't a master of {cfg.Master}.");
             }
         }
+        ValidateConditions(rep, known);
         return rep;
+    }
+
+    // Condition parameters aren't form links
+    private static void ValidateConditions(TextReport rep, HashSet<string> known) {
+        var vars = rep.Scan.Vars;
+        foreach (var p in vars.FormParams) {
+            var fk = vars.Target(p.Raw);
+            if (fk == null) {
+                Add(rep, known, $"{p.File} line {p.Line + 1} has a condition with the invalid FormID {p.Raw:X8}.");
+            } else if (fk.EndsWith(":" + vars.Self.FileName, StringComparison.OrdinalIgnoreCase) && !rep.Scan.Defs.ContainsKey(fk)) {
+                Add(rep, known, $"Dangling reference. Form {fk} doesn't exist, referenced by a condition in {p.File}.");
+            }
+        }
+
+        foreach (var c in vars.VarConditions) {
+            var script = vars.ScriptFor(vars.Target(c.First));
+            if (script != null && vars.Vars.TryGetValue(script, out var names) && !names.ContainsKey(c.Second)) {
+                Add(rep, known, $"{c.File} has a condition referencing variable {c.Second} of {vars.Describe(script)}, which doesn't exist.");
+            }
+        }
     }
 
     private static void Add(TextReport rep, HashSet<string> known, string warning) {

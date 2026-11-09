@@ -45,6 +45,9 @@ public static class CollisionFixer {
         var renames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); // old path, new path
 
         var replaced = new List<(string from, string to)>();
+        var selfIndex = (uint)scan.Vars.Masters.Count;
+        string ParamOf(string formKey) => "Parameter: " + (int)((selfIndex << 24) | TextOps.IdOf(formKey));
+        bool IsParam(string line, string param) => line.EndsWith(param, StringComparison.Ordinal) && line.TrimStart(' ', '-') is var t && (t.StartsWith("First") || t.StartsWith("Second"));
         string WithReplacements(string text) {
             foreach (var (f, t) in replaced) {
                 text = text.Replace(f, t, StringComparison.OrdinalIgnoreCase);
@@ -78,6 +81,8 @@ public static class CollisionFixer {
             var loc = candidates[0];
             var newId = nextId++;
             var newFk = $"{newId:X6}:{master}";
+            string oldParam = ParamOf(fk), newParam = ParamOf(newFk);
+            bool Mentions(string l) => l.Contains(fk, StringComparison.OrdinalIgnoreCase) || IsParam(l, oldParam);
             var oldNamedPath = NamedPath(loc.File);
             var newPath = RenumberDefinition(r, loc with { File = ApplyRenames(loc.File, renames) }, fk, newFk);
             if (newPath != null) {
@@ -95,7 +100,7 @@ public static class CollisionFixer {
                 }
 
                 var lines = File.ReadAllLines(path).ToList();
-                if (!lines.Any(l => l.Contains(fk, StringComparison.OrdinalIgnoreCase))) {
+                if (!lines.Any(Mentions)) {
                     continue;
                 }
 
@@ -106,7 +111,7 @@ public static class CollisionFixer {
                 bool changed = false;
                 for (int i = 0; i < lines.Count; i++) {
                     var l = lines[i];
-                    if (!l.Contains(fk, StringComparison.OrdinalIgnoreCase) || TextOps.DefRegex().IsMatch(l)) {
+                    if (!Mentions(l) || TextOps.DefRegex().IsMatch(l)) {
                         continue;
                     }
 
@@ -134,7 +139,7 @@ public static class CollisionFixer {
                         continue;
                     }
 
-                    lines[i] = l.Replace(fk, newFk, StringComparison.OrdinalIgnoreCase);
+                    lines[i] = IsParam(l, oldParam) ? l[..^oldParam.Length] + newParam : l.Replace(fk, newFk, StringComparison.OrdinalIgnoreCase);
                     changed = true;
                 }
                 if (changed) {
@@ -142,13 +147,14 @@ public static class CollisionFixer {
                 }
             }
             replaced.Add((fk, newFk));
+            replaced.Add((oldParam + "\n", newParam + "\n"));
         }
         MergeMap.ApplyRenumber(r, report.OldToNew);
         Repo.DeleteEmptyFolders(r.SpriggitDir);
         return report;
     }
 
-    private static List<string> ChangedFiles(Repo r, string from, string to, string folder) {
+    public static List<string> ChangedFiles(Repo r, string from, string to, string folder) {
         var output = r.Git("-c", "core.quotepath=off", "diff", "--name-only", "--no-renames", from, to, "--", folder);
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(l => l.Trim())

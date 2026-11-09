@@ -47,7 +47,7 @@ public static class PluginOps {
 
     public static BinaryWriteParameters WriteParams(IEnumerable<ModKey> loadOrder) => new() {
         MastersListOrdering = new MastersListOrderingByLoadOrder(loadOrder),
-        OverriddenFormsOption = OverriddenFormsOption.Iterate,
+        OverriddenFormsOption = OverriddenFormsOption.NoCheck,
         FormIDCompaction = FormIDCompactionOption.NoCheck,
     };
 
@@ -115,6 +115,7 @@ public static class PluginOps {
             Rekey(plugin, ownRecords, map);
             plugin.RemapLinks(map);
         }
+        TranslateConditions(master, plugin, map, res);
 
         // Links to plugins that aren't masters would break the master
         foreach (var r in plugin.EnumerateMajorRecords()) {
@@ -154,6 +155,12 @@ public static class PluginOps {
         remove.UnionWith(delete);
         if (remove.Count > 0) {
             master.Remove(remove);
+            foreach (var t in master.DialogTopics) {
+                t.Remove(remove);
+            }
+            foreach (var w in master.Worldspaces) {
+                w.Remove(remove);
+            }
         }
 
         foreach (var k in delete.Where(existing.Contains)) {
@@ -193,7 +200,96 @@ public static class PluginOps {
         }
 
         FixCellBlocks(master);
+        AddOverriddenForms(master, contexts.Where(c => !delete.Contains(c.Record.FormKey)));
+
+        var merged = master.EnumerateMajorRecords().GroupBy(r => r.FormKey).ToDictionary(g => g.Key, g => g.First());
+        foreach (var ctx in contexts) {
+            var rec = ctx.Record;
+            if (delete.Contains(rec.FormKey) || IsContainer(rec)) {
+                continue;
+            }
+            if (!merged.TryGetValue(rec.FormKey, out var inMaster) || !inMaster.Equals(rec)) {
+                res.Errors.Add($"{Describe(rec)} didn't get copied into {masterKey} correctly. This is a bug in fo-git.");
+            }
+        }
+        foreach (var k in delete) {
+            if (merged.ContainsKey(k)) {
+                res.Errors.Add($"{k} didn't get deleted from {masterKey}. This is a bug in fo-git.");
+            }
+        }
         return res;
+    }
+
+    private static void AddOverriddenForms(Fallout3Mod master, IEnumerable<IModContext<IFallout3Mod, IFallout3ModGetter, IMajorRecord, IMajorRecordGetter>> contexts) {
+        const int persistent = 0x400;
+        var list = master.ModHeader.OverriddenForms ??= new();
+        var listed = list.Select(l => l.FormKey).ToHashSet();
+        foreach (var ctx in contexts) {
+            var rec = ctx.Record;
+            if (rec.FormKey.ModKey == master.ModKey || (rec.MajorRecordFlagsRaw & persistent) != 0 || listed.Contains(rec.FormKey)) {
+                continue;
+            }
+            if (ctx.Parent?.Record is not IMajorRecordGetter parent || parent is IWorldspaceGetter) {
+                continue;
+            }
+
+            list.Add(new FormLink<IFallout3MajorRecordGetter>(rec.FormKey));
+            listed.Add(rec.FormKey);
+        }
+    }
+
+    private static void TranslateConditions(Fallout3Mod master, Fallout3Mod plugin, Dictionary<FormKey, FormKey> map, PluginMergeResult res) {
+        var pluginMasters = plugin.ModHeader.MasterReferences.Select(m => m.Master).ToList();
+        var masterMasters = master.ModHeader.MasterReferences.Select(m => m.Master).ToList();
+        int Translate(IMajorRecordGetter r, int raw) {
+            if (raw == 0) {
+                return raw;
+            }
+
+            if (Conditions.Decode(raw, pluginMasters, plugin.ModKey) is not { } fk) {
+                res.Warnings.Add($"{Describe(r)} has a condition with invalid FormID {raw:X8}.");
+                return raw;
+            }
+            if (map.TryGetValue(fk, out var renumbered)) {
+                fk = renumbered;
+            }
+
+            if (Conditions.Encode(fk, masterMasters, master.ModKey) is not { } encoded) {
+                res.Errors.Add($"{Describe(r)} has a condition referencing {fk}, but {fk.ModKey} isn't a master of {master.ModKey}.");
+                return raw;
+            }
+            return encoded;
+        }
+
+        foreach (var r in plugin.EnumerateMajorRecords()) {
+            foreach (var c in Conditions.In(r)) {
+                int f = (int)c.Function;
+                int first = c.FirstParameter;
+                if (!Conditions.IsKnown(f) && ((uint)first >= 0x1000000 || (uint)c.SecondParameter >= 0x1000000)) {
+                    res.Warnings.Add($"{Describe(r)} has a condition with function {f} with unknown parameters. Reference args may need manual fixing.");
+                }
+                if (Conditions.IsForm(f, first, second: false)) {
+                    c.FirstParameter = Translate(r, first);
+                }
+                if (Conditions.IsForm(f, first, second: true)) {
+                    c.SecondParameter = Translate(r, c.SecondParameter);
+                }
+            }
+        }
+    }
+
+    // Variables of every script in the plugin, by final corrected FormKey
+    public static Dictionary<string, Dictionary<int, string>> ScriptVariables(Fallout3Mod mod) {
+        var vars = new Dictionary<string, Dictionary<int, string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in mod.Scripts) {
+            var names = vars[ScriptVars.Key(s.FormKey)] = new();
+            foreach (var v in s.Fields.LocalVariables) {
+                if (v.Data != null) {
+                    names[(int)v.Data.Index] = v.Name;
+                }
+            }
+        }
+        return vars;
     }
 
     // Per-field merge for infomaps
