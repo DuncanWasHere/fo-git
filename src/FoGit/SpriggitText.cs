@@ -10,6 +10,7 @@ public static partial class SpriggitText {
     public sealed class ApplyReport {
         public int Added, Changed, Removed, Moved;
         public readonly List<string> Notes = new();
+        public readonly HashSet<string> Files = new(StringComparer.OrdinalIgnoreCase);
     }
 
     // "Key: >", "Key: |+", "Key: -", etc.
@@ -83,6 +84,7 @@ public static partial class SpriggitText {
 
         var output = new Dictionary<string, (string? curRel, string newRel, byte[] content)>();
         var segmentNames = new Dictionary<string, string>(); // path prefix key, segment name
+        var changed = new HashSet<string>();
         foreach (var (key, newRel) in incoming) {
             var newBytes = Repo.StripCr(File.ReadAllBytes(Path.Combine(newDir, Repo.Norm(newRel))));
             current.TryGetValue(key, out var curRel);
@@ -106,9 +108,11 @@ public static partial class SpriggitText {
                 }
                 if (!content.AsSpan().SequenceEqual(curBytes)) {
                     rep.Changed++;
+                    changed.Add(key);
                 }
             } else {
                 rep.Added++;
+                changed.Add(key);
             }
 
             output[key] = (curRel, newRel, content);
@@ -118,6 +122,9 @@ public static partial class SpriggitText {
         // Second pass, write everything and delete old or removed files
         foreach (var (key, (curRel, newRel, content)) in output) {
             var finalRel = FinalPath(newRel, curRel, segmentNames);
+            if (changed.Contains(key)) {
+                rep.Files.Add(finalRel);
+            }
             Repo.WriteIfChanged(Path.Combine(curDir, Repo.Norm(finalRel)), content);
             if (curRel != null && !string.Equals(curRel, finalRel, StringComparison.Ordinal)) {
                 File.Delete(Path.Combine(curDir, Repo.Norm(curRel)));

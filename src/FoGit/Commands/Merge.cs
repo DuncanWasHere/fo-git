@@ -27,17 +27,34 @@ static partial class Cli {
         var master = PluginOps.LoadMutable(r.EsmPath);
         var plugin = PluginOps.LoadMutable(pluginPath);
         var idMap = MergeMap.Load(r, name);
+        var masterVars = PluginOps.ScriptVariables(master);
         var res = PluginOps.MergeInto(master, plugin, idMap);
         ReportMerge(res, name, mergedBefore: idMap.Count > 0);
+        var pluginVars = PluginOps.ScriptVariables(plugin);
 
+        SpriggitText.ApplyReport applied = null!;
         r.WithTempDir("merge", tmp => {
             var tmpEsm = Path.Combine(tmp, r.Config.Master);
             master.WriteToBinary(tmpEsm, PluginOps.WriteParams(LoadOrder(r)));
             // Plugin might be based on an older master
-            GenerateTextFromEsm(r, tmpEsm, baseIsCurrent: false);
+            applied = GenerateTextFromEsm(r, tmpEsm, baseIsCurrent: false);
         });
 
-        WriteLog(r, $"merge-{Path.GetFileNameWithoutExtension(name)}", res.Details.Concat(res.Warnings.Select(w => "warning " + w)));
+        Ui.Step("Checking script variables");
+        var vars = ScriptVars.Fix(r.SpriggitDir, TextOps.Scan(r.SpriggitDir).Vars, (file, script) =>
+            applied.Files.Contains(file) && pluginVars.TryGetValue(script, out var p) ? p
+            : masterVars.TryGetValue(script, out var m) ? m : null);
+        foreach (var f in vars.Fixed) {
+            Ui.Info("  " + f);
+        }
+        foreach (var w in vars.Warnings) {
+            Ui.Warn(w);
+        }
+        if (vars.Fixed.Count == 0 && vars.Warnings.Count == 0) {
+            Ui.Info("  Nothing changed.");
+        }
+
+        WriteLog(r, $"merge-{Path.GetFileNameWithoutExtension(name)}", res.Details.Concat(vars.Fixed).Concat(res.Warnings.Concat(vars.Warnings).Select(w => "warning " + w)));
         foreach (var (k, v) in res.IdMap) {
             idMap[k] = v;
         }
