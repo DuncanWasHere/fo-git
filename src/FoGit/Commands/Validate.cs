@@ -1,85 +1,77 @@
 using FoGit;
+using FoGit.Repo;
+using FoGit.Text;
+using YamlMerge = FoGit.Text.YamlMerge;
 
 static partial class Cli {
-    static int Validate(Repo r, string[] args) {
+    static int Validate(FoGitRepo repo, string[] args) {
         bool roundTrip = args.Contains("--round-trip");
-        bool picked = roundTrip || args.Contains("--text") || args.Contains("--esm");
-        bool text = !picked || args.Contains("--text"), esm = !picked || args.Contains("--esm");
+        bool filtered = roundTrip || args.Contains("--text") || args.Contains("--esm");
+        bool validateText = !filtered || args.Contains("--text");
+        bool validateEsm = !filtered || args.Contains("--esm");
 
-        var found = new List<string>();
-        if (text) {
-            var rep = ValidateText(r);
-            found.AddRange(rep.Errors.Concat(rep.Warnings));
+        if (validateText) {
+            ValidateText(repo);
         }
 
-        if ((esm || roundTrip) && r.GetBuildState() != Repo.BuildState.UpToDate) {
-            if (esm) {
-                Ui.Info($"Skipped ESM validation because {r.Config.Master} doesn't match the Spriggit text.");
+        if ((validateEsm || roundTrip) && repo.GetBuildState() != BuildState.UpToDate) {
+            if (validateEsm) {
+                Ui.Info($"Skipped ESM validation because {repo.RepoConfig.Master} is out of sync with the text tree.");
             }
             if (roundTrip) {
-                Ui.Info($"Skipped round trip validation because {r.Config.Master} doesn't match the Spriggit text.");
+                Ui.Info($"Skipped round trip validation because {repo.RepoConfig.Master} is out of sync with the text tree.");
             }
         } else {
-            if (esm) {
-                found.AddRange(ValidateEsm(r));
+            if (validateEsm) {
+                ValidateEsm(repo);
             }
             if (roundTrip) {
-                ValidateRoundTrip(r);
+                ValidateRoundTrip(repo);
             }
         }
-
-        if (args.Contains("--accept-current")) {
-            AcceptIssues(r, found);
-            return 0;
-        }
+        
         return Ui.Errors == 0 ? 0 : 1;
     }
 
-    static TextOps.TextReport ValidateText(Repo r, bool quiet = false) {
+    static void ValidateText(FoGitRepo repo, bool quiet = false) {
         if (!quiet) {
-            Ui.Step("Validating the Spriggit text");
+            Ui.Step("Validating the text tree");
         }
 
-        var rep = TextOps.Validate(r.SpriggitDir, r.Config, r.KnownIssues);
-        foreach (var w in rep.Warnings) {
+        var report = TextOps.Validate(repo.TextTreeDir, repo.RepoConfig);
+        foreach (var w in report.Warnings) {
             Ui.Warn(w);
         }
 
-        foreach (var e in rep.Errors) {
+        foreach (var e in report.Errors) {
             Ui.Error(e);
         }
 
-        if (!quiet && rep.Errors.Count == 0 && rep.Warnings.Count == 0) {
-            Ui.Info($"  No problems in {rep.Records} records.");
+        if (!quiet && report.Errors.Count == 0 && report.Warnings.Count == 0) {
+            Ui.Info($"  No problems in {report.Records} records.");
         }
-
-        return rep;
     }
 
-    // Prints and returns errors/warnings that aren't known issues
-    static List<string> ValidateEsm(Repo r) {
-        Ui.Step($"Validating {r.Config.Master}");
-        using var m = PluginOps.LoadOverlay(r.EsmPath);
-        var rep = PluginOps.ValidateEsm(m, r.Local.MasterSearchPaths);
-        foreach (var w in rep.Warnings) {
+    static void ValidateEsm(FoGitRepo repo) {
+        Ui.Step($"Validating {repo.RepoConfig.Master}");
+        
+        using var esm = PluginOps.LoadOverlay(repo.EsmPath);
+        var report = PluginOps.ValidateEsm(esm, repo.LocalConfig.MasterSearchPaths);
+        foreach (var w in report.Warnings) {
             Ui.Warn(w);
         }
 
-        var known = r.KnownIssues;
-        var errors = rep.Errors.Where(e => !known.Contains(TextOps.IssueKey(e))).ToList();
-        foreach (var e in errors) {
+        foreach (var e in report.Errors) {
             Ui.Error(e);
         }
-
-        return errors;
     }
 
     // Spriggit silently skips malformed text so we have to round-trip to validate
-    static void ValidateRoundTrip(Repo r) {
-        Ui.Step($"Generating Spriggit text from {r.Config.Master}");
-        r.WithTempDir("roundtrip", tmp => {
-            r.GenerateText(r.EsmPath, tmp);
-            var diffs = RoundTripDiffs(r.SpriggitDir, tmp);
+    static void ValidateRoundTrip(FoGitRepo repo) {
+        Ui.Step($"Generating Spriggit text from {repo.RepoConfig.Master}");
+        repo.WithTempDir("roundtrip", tmpDir => {
+            repo.GenerateText(repo.EsmPath, tmpDir);
+            var diffs = RoundTripDiffs(repo.TextTreeDir, tmpDir);
             foreach (var d in diffs) {
                 Ui.Error(d);
             }
@@ -117,15 +109,5 @@ static partial class Cli {
             diffs.Add($"{rel} was generated by Spriggit from the ESM but was not found in the input text the ESM was built with. Is the text malformed?");
         }
         return diffs;
-    }
-
-    static void AcceptIssues(Repo r, List<string> found) {
-        var known = r.KnownIssues;
-        known.UnionWith(found.Select(TextOps.IssueKey));
-        Directory.CreateDirectory(Path.GetDirectoryName(r.KnownIssuesPath)!);
-        File.WriteAllLines(r.KnownIssuesPath, new[] {
-            "# These will not be reported again. REmove each line when fixed!",
-        }.Concat(known.OrderBy(x => x)));
-        Ui.Info($"Wrote {known.Count} issue(s) to {r.Config.KnownIssuesFile}.");
     }
 }

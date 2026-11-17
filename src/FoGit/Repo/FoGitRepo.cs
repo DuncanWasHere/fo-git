@@ -3,54 +3,59 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using FoGit.Text;
 
-namespace FoGit;
+namespace FoGit.Repo;
 
-public sealed class Repo {
-    public string Root { get; }
-    public RepoConfig Config { get; }
-    public LocalConfig Local { get; }
+public sealed class FoGitRepo {
+    public string RootDir { get; }
+    public RepoConfig RepoConfig { get; }
+    public LocalConfig LocalConfig { get; }
 
-    public string ConfigPath => Path.Combine(Root, "fo-git.json");
-    public string LocalConfigPath => Path.Combine(Root, "fo-git.local.json");
+    public string RepoConfigPath => Path.Combine(RootDir, "fo-git.json");
+    public string LocalConfigPath => Path.Combine(RootDir, "fo-git.local.json");
 
-    public string StateDir => Path.Combine(Root, ".fo-git");
-    public string EsmPath => Path.Combine(Root, Config.Master);
-    public string SpriggitDir => Path.Combine(Root, Norm(Config.SpriggitFolder));
-    public string BuildInfoPath => Path.Combine(StateDir, "build-stamp.json");
-    public string KnownIssuesPath => Path.Combine(Root, Norm(Config.KnownIssuesFile));
-    public HashSet<string> KnownIssues => TextOps.LoadKnownIssues(KnownIssuesPath);
+    public string EsmPath => Path.Combine(RootDir, RepoConfig.Master);
+    public string TextTreeDir => Path.Combine(RootDir, NormalizePath(RepoConfig.SpriggitFolder));
 
-    public string MergeMapDir => Path.Combine(StateDir, "merge-maps");
+    public string CacheDir => Path.Combine(RootDir, ".fo-git");
+    public string BuildInfoPath => Path.Combine(CacheDir, "build-stamp.json");
+    public string MergeMapDir => Path.Combine(CacheDir, "merge-maps");
+    public string MergePluginsFolder => Path.GetFullPath(Path.Combine(RootDir, NormalizePath(LocalConfig.MergePluginsFolder)));
+    public string EsmCacheDir => Path.Combine(CacheDir, "esm-cache");
 
-    public string PluginFolder => Path.GetFullPath(Path.Combine(Root, Norm(Local.PluginFolder ?? Config.PluginFolder)));
-
-    private Repo(string root) {
-        Root = root;
-        Config = RepoConfig.Load(ConfigPath);
-        Local = LocalConfig.Load(LocalConfigPath);
-        Directory.CreateDirectory(StateDir);
+    private FoGitRepo(string rootDir) {
+        RootDir = rootDir;
+        RepoConfig = RepoConfig.Load(RepoConfigPath);
+        LocalConfig = LocalConfig.Load(LocalConfigPath);
+        Directory.CreateDirectory(CacheDir);
     }
 
-    public static Repo Find() {
+    /// <summary>
+    /// Find fo-git.json in the working directory or a parent folder and parse the config into a new FoGitRepo instance.  
+    /// </summary>
+    /// <returns>The configured FoGitRepo instance associated with the working directory.</returns>
+    /// <exception cref="UserError">There is no fo-git.json in the working directory or its parent folders.</exception>
+    public static FoGitRepo FindRepo() {
         foreach (var start in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory }) {
             var dir = new DirectoryInfo(start);
             while (dir != null) {
                 if (File.Exists(Path.Combine(dir.FullName, "fo-git.json"))) {
-                    return new Repo(dir.FullName);
+                    return new FoGitRepo(dir.FullName);
                 }
 
                 dir = dir.Parent;
             }
         }
+        
         throw new UserError("Couldn't find fo-git.json");
     }
 
-    public static string Norm(string p) => p.Replace('/', Path.DirectorySeparatorChar);
+    public static string NormalizePath(string p) => p.Replace('/', Path.DirectorySeparatorChar);
 
     // ---------------------------------------------------------------- Git
 
-    public (int code, string stdout, string stderr) GitRaw(params string[] args) => Proc.Run("git", args, Root);
+    public (int code, string stdout, string stderr) GitRaw(params string[] args) => Proc.Run("git", args, RootDir);
 
     public string Git(params string[] args) {
         var (code, stdout, stderr) = GitRaw(args);
@@ -69,15 +74,15 @@ public sealed class Repo {
 
     public string SpriggitCli {
         get {
-            var dir = Path.Combine(StateDir, "spriggit-cli", Config.SpriggitVersion);
+            var dir = Path.Combine(CacheDir, "spriggit-cli", RepoConfig.SpriggitVersion);
             var exe = Path.Combine(dir, OperatingSystem.IsWindows() ? "Spriggit.CLI.exe" : "Spriggit.CLI");
             if (File.Exists(exe)) {
                 return exe;
             }
 
-            Ui.Info($"Downloading Spriggit {Config.SpriggitVersion}");
+            Ui.Info($"Downloading Spriggit {RepoConfig.SpriggitVersion}");
             var asset = OperatingSystem.IsWindows() ? "SpriggitCLI.zip" : "SpriggitLinuxCLI.zip";
-            var url = $"https://github.com/Mutagen-Modding/Spriggit/releases/download/{Config.SpriggitVersion}/{asset}";
+            var url = $"https://github.com/Mutagen-Modding/Spriggit/releases/download/{RepoConfig.SpriggitVersion}/{asset}";
             using var http = new HttpClient();
             var bytes = http.GetByteArrayAsync(url).GetAwaiter().GetResult();
             Directory.CreateDirectory(dir);
@@ -94,8 +99,7 @@ public sealed class Repo {
     }
 
     private void RunSpriggit(params string[] args) {
-        var sw = Stopwatch.StartNew();
-        var code = Proc.RunStreaming(SpriggitCli, args, Root, line => {
+        var code = Proc.RunStreaming(SpriggitCli, args, RootDir, line => {
             if (line.Contains("ERR") || line.Contains("WRN") || line.Contains("Exception")) {
                 Ui.Info(line.Trim());
             }
@@ -103,15 +107,13 @@ public sealed class Repo {
         if (code != 0) {
             throw new UserError($"Spriggit failed with exit code {code}. Run this command for the full output.\n  \"{SpriggitCli}\" {string.Join(' ', args.Select(Proc.Quote))}");
         }
-
-        Ui.Info($"    (took {sw.Elapsed:m\\:ss})");
     }
 
     public void GenerateText(string esmPath, string textDir) {
         var tmp = TempDir("ser");
         try {
             RunSpriggit("serialize", "-i", esmPath, "-o", tmp, "-g", "FalloutNV",
-                "-p", Config.SpriggitPackage, "-v", Config.SpriggitVersion, "-u", "true");
+                "-p", RepoConfig.SpriggitPackage, "-v", RepoConfig.SpriggitVersion, "-u", "true");
             SyncFolder(tmp, textDir, SpriggitText.Normalize);
         } finally {
             TryDelete(tmp);
@@ -142,7 +144,7 @@ public sealed class Repo {
     }
 
     public string TempDir(string prefix) {
-        var d = Path.Combine(StateDir, "tmp", prefix + "-" + Guid.NewGuid().ToString("N")[..8]);
+        var d = Path.Combine(CacheDir, "tmp", prefix + "-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(d);
         return d;
     }
@@ -218,37 +220,19 @@ public sealed class Repo {
     }
 
     // ---------------------------------------------------------------- Build info
-
-    public static string HashFolder(string dir) {
-        if (!Directory.Exists(dir)) {
-            return "missing";
-        }
-
-        var files = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
-            .Select(f => (rel: Path.GetRelativePath(dir, f).Replace('\\', '/'), full: f))
-            .OrderBy(x => x.rel, StringComparer.Ordinal).ToList();
-        using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        foreach (var (rel, full) in files) {
-            sha.AppendData(Encoding.UTF8.GetBytes(rel + "\0"));
-            sha.AppendData(StripCr(File.ReadAllBytes(full)));
-            sha.AppendData([0]);
-        }
-        return Convert.ToHexString(sha.GetHashAndReset())[..16];
-    }
-
     public static string HashFile(string path) {
         using var fs = File.OpenRead(path);
         return Convert.ToHexString(SHA256.HashData(fs))[..16];
     }
 
     // Git tree hash of the spriggit folder
-    public string TextTree() {
-        if (!Directory.Exists(SpriggitDir)) {
+    public string TextTreeHash() {
+        if (!Directory.Exists(TextTreeDir)) {
             return "missing";
         }
 
-        var index = Path.Combine(StateDir, "text-index");
-        var realIndex = Path.GetFullPath(Path.Combine(Root, Git("rev-parse", "--git-path", "index")));
+        var index = Path.Combine(CacheDir, "text-index");
+        var realIndex = Path.GetFullPath(Path.Combine(RootDir, Git("rev-parse", "--git-path", "index")));
         if (File.Exists(realIndex)) {
             File.Copy(realIndex, index, overwrite: true);
         } else {
@@ -256,7 +240,7 @@ public sealed class Repo {
         }
 
         var env = new Dictionary<string, string> { ["GIT_INDEX_FILE"] = index };
-        var folder = Config.SpriggitFolder.TrimEnd('/');
+        var folder = RepoConfig.SpriggitFolder.TrimEnd('/');
         try {
             // Drop everything outside the folder
             Run(env, "rm", "--sparse", "-r", "-q", "-f", "--cached", "--ignore-unmatch", "--", ".", $":(exclude){folder}");
@@ -268,16 +252,14 @@ public sealed class Repo {
     }
 
     private string Run(Dictionary<string, string> env, params string[] args) {
-        var (code, stdout, stderr) = Proc.Run("git", args, Root, env);
+        var (code, stdout, stderr) = Proc.Run("git", args, RootDir, env);
         if (code != 0) {
             throw new UserError($"git {string.Join(' ', args)} failed.\n{stderr}{stdout}");
         }
 
         return stdout.Trim();
     }
-
-    public sealed record BuildInfo(string TextHash, string EsmHash, long EsmSize, DateTime EsmWriteTime, DateTime BuiltAt);
-
+    
     public BuildInfo? ReadBuildInfo() {
         if (!File.Exists(BuildInfoPath)) {
             return null;
@@ -290,19 +272,19 @@ public sealed class Repo {
         }
     }
 
-    public void WriteBuildInfo(string textHash) {
-        var fi = new FileInfo(EsmPath);
-        var info = new BuildInfo(textHash, HashFile(EsmPath), fi.Length, fi.LastWriteTimeUtc, DateTime.Now);
+    /// Update the build-stamp to record the current version of the ESM as synced with the current text tree (by checksums)
+    public void WriteBuildInfo(string textTreeHash) {
+        var esmFileInfo = new FileInfo(EsmPath);
+        var info = new BuildInfo(textTreeHash, HashFile(EsmPath), esmFileInfo.Length, esmFileInfo.LastWriteTimeUtc, DateTime.Now);
         File.WriteAllText(BuildInfoPath, JsonSerializer.Serialize(info, Json.Options));
-        CacheEsm(textHash);
+        
+        CacheEsm(textTreeHash);
     }
 
     // ---------------------------------------------------------------- ESM cache
 
     // Copies of the ESM for each text git tree
-    public string EsmCacheDir => Path.Combine(StateDir, "esm-cache");
-
-    private string CachedEsmPath(string tree) => Path.Combine(EsmCacheDir, Config.SpriggitVersion, $"{tree}-{Config.Master}");
+    private string CachedEsmPath(string tree) => Path.Combine(EsmCacheDir, RepoConfig.SpriggitVersion, $"{tree}-{RepoConfig.Master}");
 
     public int CachedEsmCount => Directory.Exists(EsmCacheDir)
         ? Directory.EnumerateFiles(EsmCacheDir, "*", SearchOption.AllDirectories).Count()
@@ -310,7 +292,7 @@ public sealed class Repo {
 
     public bool RestoreCachedEsm(string tree) {
         var cached = CachedEsmPath(tree);
-        if (Local.EsmCacheSize <= 0 || !File.Exists(cached)) {
+        if (LocalConfig.EsmCacheSize <= 0 || !File.Exists(cached)) {
             return false;
         }
 
@@ -321,7 +303,7 @@ public sealed class Repo {
     }
 
     private void CacheEsm(string tree) {
-        if (Local.EsmCacheSize <= 0 || tree == "missing" || !File.Exists(EsmPath)) {
+        if (LocalConfig.EsmCacheSize <= 0 || tree == "missing" || !File.Exists(EsmPath)) {
             return;
         }
 
@@ -335,7 +317,7 @@ public sealed class Repo {
         File.SetCreationTimeUtc(cached, DateTime.UtcNow);
 
         var old = new DirectoryInfo(EsmCacheDir).EnumerateFiles("*", SearchOption.AllDirectories)
-            .OrderByDescending(f => f.CreationTimeUtc).Skip(Local.EsmCacheSize).ToList();
+            .OrderByDescending(f => f.CreationTimeUtc).Skip(LocalConfig.EsmCacheSize).ToList();
         foreach (var f in old) {
             TryDelete(f.FullName);
         }
@@ -343,53 +325,33 @@ public sealed class Repo {
     }
 
     public bool RebaseInProgress() =>
-        new[] { "rebase-merge", "rebase-apply" }.Any(d => Directory.Exists(Path.GetFullPath(Path.Combine(Root, Git("rev-parse", "--git-path", d)))));
-
-    public enum BuildState {
-        Missing,
-        UpToDate,
-        TextChanged,
-        EsmEdited,
-    }
+        new[] { "rebase-merge", "rebase-apply" }.Any(d => Directory.Exists(Path.GetFullPath(Path.Combine(RootDir, Git("rev-parse", "--git-path", d)))));
 
     private bool EsmMatches(BuildInfo info) {
-        var fi = new FileInfo(EsmPath);
-        return (info.EsmSize == fi.Length && info.EsmWriteTime == fi.LastWriteTimeUtc) || HashFile(EsmPath) == info.EsmHash;
-    }
-
-    // Edited since fo-git built it
-    public bool EsmEdited() {
-        var info = ReadBuildInfo();
-        return info != null && File.Exists(EsmPath) && !EsmMatches(info);
-    }
-
-    // Edited since fo-git built it, or not built by fo-git at all
-    public bool EsmHasEdits() {
-        var info = ReadBuildInfo();
-        return File.Exists(EsmPath) && (info == null || !EsmMatches(info));
+        var esm = new FileInfo(EsmPath);
+        return (info.EsmSize == esm.Length && info.EsmWriteTime == esm.LastWriteTimeUtc) || HashFile(EsmPath) == info.EsmHash;
     }
 
     public BuildState GetBuildState() {
         var info = ReadBuildInfo();
-        if (!File.Exists(EsmPath) || info == null) {
-            return BuildState.Missing;
+        
+        if (!File.Exists(EsmPath)) {
+            return BuildState.EsmMissing;
+        }
+
+        if (info == null) {
+            return BuildState.EsmNotTracked;
         }
 
         if (!EsmMatches(info)) {
-            return BuildState.EsmEdited;
+            return BuildState.TextOutOfDate;
         }
 
-        var tree = TextTree();
-        if (tree == info.TextHash) {
+        var textTreeHash = TextTreeHash();
+        if (textTreeHash == info.TextTreeHash) {
             return BuildState.UpToDate;
         }
 
-        // Compatibility check for updating from older fo-git
-        if (info.TextHash.Length == 16 && HashFolder(SpriggitDir) == info.TextHash) {
-            WriteBuildInfo(tree);
-            return BuildState.UpToDate;
-        }
-
-        return BuildState.TextChanged;
+        return BuildState.EsmOutOfDate;
     }
 }

@@ -1,7 +1,8 @@
 using FoGit;
+using FoGit.Repo;
 
 static partial class Cli {
-    static int Hook(Repo r, string[] args) {
+    static int Hook(FoGitRepo r, string[] args) {
         switch (args.FirstOrDefault()) {
             case "pre-commit":
                 return PreCommit(r);
@@ -31,29 +32,29 @@ static partial class Cli {
         return 0;
     }
 
-    static int PreCommit(Repo r) {
-        // Only if Spriggit text is being committed
-        if (r.Git("diff", "--cached", "--name-only", "--", r.Config.SpriggitFolder).Length == 0) {
+    static int PreCommit(FoGitRepo foGitRepo) {
+        // Only continue if Spriggit text is being committed
+        if (foGitRepo.Git("diff", "--cached", "--name-only", "--", foGitRepo.RepoConfig.SpriggitFolder).Length == 0) {
             return 0;
         }
 
-        if (r.EsmEdited()) {
-            switch (AskAboutEdits($"{r.Config.Master} has changes that aren't reflected in the Spriggit text.", canAbort: true)) {
-                case EditChoice.Generate:
-                    GenerateText(r);
+        if (foGitRepo.GetBuildState() == BuildState.TextOutOfDate) {
+            switch (AskAboutEdits($"{foGitRepo.RepoConfig.Master} has changes that aren't reflected in the Spriggit text.", canAbort: true)) {
+                case EditChoice.RegenerateText:
+                    GenerateTextCommand(foGitRepo);
                     Console.Error.WriteLine("Generated the Spriggit text. Stage the changes you want to keep and commit again.");
                     return 1;
-                case EditChoice.Rebuild:
-                    BuildEsm(r, discardEdits: true);
+                case EditChoice.RebuildEsm:
+                    BuildEsm(foGitRepo, discardEdits: true);
                     break;
                 default:
-                    Console.Error.WriteLine($"fo-git blocked this commit. Run Tools/{GenerateBat}, then retry the commit. To discard the edits, run Tools/{BuildBat}.");
+                    Console.Error.WriteLine($"fo-git blocked this commit. Run Tools/{GenerateTextBat}, then retry the commit. To discard the edits, run Tools/{BuildEsmBat}.");
                     return 1;
             }
         }
 
         // Only check staged changes here, GitHub handles the rest
-        var markers = StagedMarkers(r);
+        var markers = StagedMarkers(foGitRepo);
         if (markers.Count == 0) {
             return 0;
         }
@@ -66,24 +67,24 @@ static partial class Cli {
         return 1;
     }
 
-    static void AfterMerge(Repo r) {
+    static void AfterMerge(FoGitRepo r) {
         FixCollisions(r);
         ValidateText(r, quiet: true);
         AfterTextChange(r);
     }
 
-    static void AfterTextChange(Repo r) {
+    static void AfterTextChange(FoGitRepo r) {
         switch (r.GetBuildState()) {
-            case Repo.BuildState.UpToDate:
+            case BuildState.UpToDate:
                 return;
-            case Repo.BuildState.EsmEdited:
-                if (ResolveEdits(r, $"The Spriggit text changed, but {r.Config.Master} has changes that aren't reflected in the text.", canAbort: false) == EditChoice.Leave) {
-                    Ui.Info($"The ESM wasn't built. Run \"{GenerateBat}\" to merge your edits with the new text, or \"{BuildBat}\" to discard them.");
+            case BuildState.TextOutOfDate:
+                if (ResolveEdits(r, $"The Spriggit text changed, but {r.RepoConfig.Master} has changes that aren't reflected in the text.", canAbort: false) == EditChoice.Leave) {
+                    Ui.Info($"The ESM wasn't built. Run \"{GenerateTextBat}\" to merge your edits with the new text, or \"{BuildEsmBat}\" to discard them.");
                 }
                 return;
-            case Repo.BuildState.Missing when File.Exists(r.EsmPath):
-                if (ResolveEdits(r, $"{r.Config.Master} wasn't built by fo-git.", canAbort: false) == EditChoice.Leave) {
-                    Ui.Info($"Run \"{GenerateBat}\" to keep its edits, or \"{BuildBat}\" to replace it.");
+            case BuildState.EsmNotTracked when File.Exists(r.EsmPath):
+                if (ResolveEdits(r, $"{r.RepoConfig.Master} wasn't built by fo-git.", canAbort: false) == EditChoice.Leave) {
+                    Ui.Info($"Run \"{GenerateTextBat}\" to keep its edits, or \"{BuildEsmBat}\" to replace it.");
                 }
                 return;
             default:
@@ -93,14 +94,14 @@ static partial class Cli {
     }
 
     // True if the Spriggit text changed between the two commits
-    static bool TextChanged(Repo r, string from, string to) {
-        var (code, stdout, _) = r.GitRaw("diff", "--name-only", from, to, "--", r.Config.SpriggitFolder);
+    static bool TextChanged(FoGitRepo r, string from, string to) {
+        var (code, stdout, _) = r.GitRaw("diff", "--name-only", from, to, "--", r.RepoConfig.SpriggitFolder);
         return code != 0 || stdout.Trim().Length > 0;
     }
 
-    static List<string> StagedMarkers(Repo r) {
+    static List<string> StagedMarkers(FoGitRepo r) {
         var found = new List<string>();
-        var diff = r.Git("-c", "core.quotepath=off", "diff", "--cached", "-U0", "--no-color", "--", r.Config.SpriggitFolder);
+        var diff = r.Git("-c", "core.quotepath=off", "diff", "--cached", "-U0", "--no-color", "--", r.RepoConfig.SpriggitFolder);
         string file = "";
         int line = 0;
         foreach (var raw in diff.Split('\n')) {
@@ -123,7 +124,7 @@ static partial class Cli {
         return found;
     }
 
-    static int FixCollisionsCommand(Repo r) {
+    static int FixCollisionsCommand(FoGitRepo r) {
         if (!FixCollisions(r, again: true)) {
             Ui.Info("Nothing to fix.");
         }
@@ -133,11 +134,11 @@ static partial class Cli {
     }
 
     // Runs once per merge commit unless again is set
-    static bool FixCollisions(Repo r, bool again = false) {
+    static bool FixCollisions(FoGitRepo r, bool again = false) {
         var head = r.Git("rev-parse", "HEAD");
-        var fixedLog = Path.Combine(r.StateDir, "fixed-merges.txt");
+        var fixedLog = Path.Combine(r.CacheDir, "fixed-merges.txt");
         if (again) {
-            Repo.TryDelete(fixedLog);
+            FoGitRepo.TryDelete(fixedLog);
         } else if (File.Exists(fixedLog) && File.ReadLines(fixedLog).Contains(head)) {
             return false;
         }
@@ -166,7 +167,27 @@ static partial class Cli {
             return false;
         }
 
-        Ui.Info($"Commit the changes in {r.Config.SpriggitFolder} now!");
+        Ui.Info($"Commit the changes in {r.RepoConfig.SpriggitFolder} now!");
         return true;
+    }
+
+
+    // For ESM changes that aren't in the Spriggit text
+    static EditChoice AskAboutEdits(string problem, bool canAbort) =>
+        Ui.Confirm(problem, "Discard changes in the ESM?", canAbort) switch {
+            true => EditChoice.RebuildEsm,
+            false => EditChoice.RegenerateText,
+            null => EditChoice.Leave,
+        };
+
+    static EditChoice ResolveEdits(FoGitRepo r, string problem, bool canAbort) {
+        var choice = AskAboutEdits(problem, canAbort);
+        if (choice == EditChoice.RegenerateText) {
+            GenerateTextCommand(r);
+        } else if (choice == EditChoice.RebuildEsm) {
+            BuildEsm(r, discardEdits: true);
+        }
+
+        return choice;
     }
 }

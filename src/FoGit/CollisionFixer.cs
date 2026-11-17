@@ -1,8 +1,10 @@
 using System.Text.RegularExpressions;
+using FoGit.Repo;
+using FoGit.Text;
 
 namespace FoGit;
 
-// Fixes duplicate FormIDs after a merge. New records are renumbered.
+// Fixes duplicate FormIDs after a merge commit. New records are renumbered.
 public static class CollisionFixer {
     public sealed class Report {
         public readonly List<string> Renumbered = new();
@@ -10,7 +12,7 @@ public static class CollisionFixer {
         public readonly Dictionary<uint, uint> OldToNew = new();
     }
 
-    public static Report Run(Repo r) {
+    public static Report Run(FoGitRepo r) {
         var report = new Report();
         var parents = r.HeadParents();
         if (parents.Length < 2) {
@@ -25,17 +27,17 @@ public static class CollisionFixer {
 
         var mergeBase = mbOut.Trim();
 
-        var master = r.Config.Master;
-        var scan = TextOps.Scan(r.SpriggitDir);
+        var master = r.RepoConfig.Master;
+        var scan = TextOps.Scan(r.TextTreeDir);
         var collisions = scan.Defs.Where(x => x.Value.Count > 1 && x.Key.EndsWith(":" + master, StringComparison.OrdinalIgnoreCase)).ToList();
         if (collisions.Count == 0) {
             return report;
         }
 
-        var folder = r.Config.SpriggitFolder.TrimEnd('/');
+        var folder = r.RepoConfig.SpriggitFolder.TrimEnd('/');
         var currentChanged = ChangedFiles(r, mergeBase, current, folder);
         var incomingChanged = ChangedFiles(r, mergeBase, incoming, folder);
-        using var blobs = new GitBlobReader(r.Root);
+        using var blobs = new GitBlobReader(r.RootDir);
         var currentDefs = DefsIn(blobs, current, currentChanged, folder);
         var baseDefs = DefsIn(blobs, mergeBase, currentChanged.Union(incomingChanged).ToList(), folder);
         var addedOnCurrent = currentDefs.Keys.Where(k => !baseDefs.ContainsKey(k)).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -67,9 +69,9 @@ public static class CollisionFixer {
             if (candidates.Count > 1) {
                 // Both copies in the same file (two new refs in one cell). Use the one that matches this branch
                 var curText = blobs.Read(current, folder + "/" + candidates[0].File);
-                var curLines = curText == null ? null : YamlMerge.SplitText(WithReplacements(curText));
+                var curLines = curText == null ? null : Text.YamlMerge.SplitText(WithReplacements(curText));
                 var curBlock = curLines == null ? null : BlockAt(curLines, FindDef(curLines, fk));
-                var lines = File.ReadAllLines(Path.Combine(r.SpriggitDir, Repo.Norm(ApplyRenames(candidates[0].File, renames)))).ToList();
+                var lines = File.ReadAllLines(Path.Combine(r.TextTreeDir, FoGitRepo.NormalizePath(ApplyRenames(candidates[0].File, renames)))).ToList();
                 var match = candidates.Where(p => curBlock != null && BlockAt(lines, p.Line - 1).SequenceEqual(curBlock)).ToList();
                 // Otherwise take the first one, this copy is written first
                 candidates = match.Count == 1 ? match : candidates.Take(1).ToList();
@@ -94,7 +96,7 @@ public static class CollisionFixer {
 
             foreach (var rel in currentChanged) {
                 var curRel = ApplyRenames(rel, renames);
-                var path = Path.Combine(r.SpriggitDir, Repo.Norm(curRel));
+                var path = Path.Combine(r.TextTreeDir, FoGitRepo.NormalizePath(curRel));
                 if (!File.Exists(path)) {
                     continue;
                 }
@@ -105,9 +107,9 @@ public static class CollisionFixer {
                 }
 
                 var curText = blobs.Read(current, folder + "/" + rel);
-                var curLines = curText == null ? new List<string>() : YamlMerge.SplitText(WithReplacements(curText));
+                var curLines = curText == null ? new List<string>() : Text.YamlMerge.SplitText(WithReplacements(curText));
                 var incText = blobs.Read(incoming, folder + "/" + rel);
-                var incLines = incText == null ? new List<string>() : YamlMerge.SplitText(incText);
+                var incLines = incText == null ? new List<string>() : Text.YamlMerge.SplitText(incText);
                 bool changed = false;
                 for (int i = 0; i < lines.Count; i++) {
                     var l = lines[i];
@@ -150,11 +152,11 @@ public static class CollisionFixer {
             replaced.Add((oldParam + "\n", newParam + "\n"));
         }
         MergeMap.ApplyRenumber(r, report.OldToNew);
-        Repo.DeleteEmptyFolders(r.SpriggitDir);
+        FoGitRepo.DeleteEmptyFolders(r.TextTreeDir);
         return report;
     }
 
-    public static List<string> ChangedFiles(Repo r, string from, string to, string folder) {
+    public static List<string> ChangedFiles(FoGitRepo r, string from, string to, string folder) {
         var output = r.Git("-c", "core.quotepath=off", "diff", "--name-only", "--no-renames", from, to, "--", folder);
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(l => l.Trim())
@@ -280,8 +282,8 @@ public static class CollisionFixer {
         return rel;
     }
 
-    private static string? RenumberDefinition(Repo r, TextOps.Location loc, string fk, string newFk) {
-        var path = Path.Combine(r.SpriggitDir, Repo.Norm(loc.File));
+    private static string? RenumberDefinition(FoGitRepo r, TextOps.Location loc, string fk, string newFk) {
+        var path = Path.Combine(r.TextTreeDir, FoGitRepo.NormalizePath(loc.File));
         var lines = File.ReadAllLines(path);
         lines[loc.Line - 1] = lines[loc.Line - 1].Replace(fk, newFk, StringComparison.OrdinalIgnoreCase);
         File.WriteAllText(path, string.Join("\n", lines) + "\n");
@@ -303,16 +305,16 @@ public static class CollisionFixer {
         // Interior cells go in Cells/<block>/<sub block>/. Block is the last decimal digit of the ID, sub block is the one before
         if (segs.Length == 4 && segs[0].Equals("Cells", StringComparison.OrdinalIgnoreCase)) {
             var id = TextOps.IdOf(newFk);
-            var oldBlockDir = Path.Combine(r.SpriggitDir, segs[0], segs[1]);
+            var oldBlockDir = Path.Combine(r.TextTreeDir, segs[0], segs[1]);
             var oldSubDir = Path.Combine(oldBlockDir, segs[2]);
             segs[1] = (id % 10).ToString();
             segs[2] = (id / 10 % 10).ToString();
-            CopyGroupFile(oldBlockDir, Path.Combine(r.SpriggitDir, segs[0], segs[1]));
-            CopyGroupFile(oldSubDir, Path.Combine(r.SpriggitDir, segs[0], segs[1], segs[2]));
+            CopyGroupFile(oldBlockDir, Path.Combine(r.TextTreeDir, segs[0], segs[1]));
+            CopyGroupFile(oldSubDir, Path.Combine(r.TextTreeDir, segs[0], segs[1], segs[2]));
         }
         var newNamed = string.Join('/', segs);
-        var from = Path.Combine(r.SpriggitDir, Repo.Norm(named));
-        var to = Path.Combine(r.SpriggitDir, Repo.Norm(newNamed));
+        var from = Path.Combine(r.TextTreeDir, FoGitRepo.NormalizePath(named));
+        var to = Path.Combine(r.TextTreeDir, FoGitRepo.NormalizePath(newNamed));
         Directory.CreateDirectory(Path.GetDirectoryName(to)!);
         if (Directory.Exists(from)) {
             Directory.Move(from, to);

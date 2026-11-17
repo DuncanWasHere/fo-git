@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace FoGit;
+namespace FoGit.Text;
 
 public static partial class TextOps {
     [GeneratedRegex(@"^\s*(?:- )?FormKey: ([0-9A-F]{6}:[^\s]+)\s*$")]
@@ -22,35 +22,35 @@ public static partial class TextOps {
     }
 
     public static ScanResult Scan(string spriggitDir) {
-        var res = new ScanResult();
+        var result = new ScanResult();
         var root = Path.GetFullPath(spriggitDir);
         foreach (var file in Directory.EnumerateFiles(root, "*.yaml", SearchOption.AllDirectories)) {
             var rel = Path.GetRelativePath(root, file).Replace('\\', '/');
             var lines = File.ReadAllLines(file);
-            res.Vars.Read(rel, lines);
+            result.Vars.Read(rel, lines);
             int lineNo = 0;
             foreach (var line in lines) {
                 lineNo++;
                 if (line.Length > 0 && line[0] is '<' or '>' or '=' or '|' && ConflictMarker().IsMatch(line)) {
-                    res.Markers.Add(new Location(rel, lineNo));
+                    result.Markers.Add(new Location(rel, lineNo));
                     continue;
                 }
                 var d = DefRegex().Match(line);
                 if (d.Success) {
                     var fk = d.Groups[1].Value;
-                    if (!res.Defs.TryGetValue(fk, out var list)) {
-                        res.Defs[fk] = list = new();
+                    if (!result.Defs.TryGetValue(fk, out var list)) {
+                        result.Defs[fk] = list = new();
                     }
 
                     list.Add(new Location(rel, lineNo));
                     continue;
                 }
                 foreach (Match m in RefRegex().Matches(line)) {
-                    res.Refs.TryAdd(m.Value, new Location(rel, lineNo));
+                    result.Refs.TryAdd(m.Value, new Location(rel, lineNo));
                 }
             }
         }
-        return res;
+        return result;
     }
 
     public sealed class TextReport {
@@ -60,16 +60,16 @@ public static partial class TextOps {
         public ScanResult Scan = null!;
     }
 
-    public static TextReport Validate(string spriggitDir, RepoConfig cfg, HashSet<string> known) {
-        var rep = new TextReport { Scan = Scan(spriggitDir) };
-        var scan = rep.Scan;
-        rep.Records = scan.Defs.Count;
+    public static TextReport Validate(string spriggitDir, RepoConfig cfg) {
+        var report = new TextReport { Scan = Scan(spriggitDir) };
+        var scan = report.Scan;
+        report.Records = scan.Defs.Count;
         foreach (var m in scan.Markers) {
-            rep.Errors.Add($"Merge conflict marker left in {m.File} line {m.Line}.");
+            report.Errors.Add($"Merge conflict marker left in {m.File} line {m.Line}.");
         }
 
         foreach (var (fk, locs) in scan.Defs.Where(x => x.Value.Count > 1)) {
-            rep.Errors.Add($"FormID collision. {fk} is used {locs.Count} times, in {string.Join(" and ", locs.Take(3).Select(l => l.File))}.");
+            report.Errors.Add($"FormID collision. {fk} is used {locs.Count} times, in {string.Join(" and ", locs.Take(3).Select(l => l.File))}.");
         }
 
         var masters = cfg.Masters.ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -77,42 +77,36 @@ public static partial class TextOps {
             var mod = fk[7..];
             if (mod.Equals(cfg.Master, StringComparison.OrdinalIgnoreCase)) {
                 if (!scan.Defs.ContainsKey(fk)) {
-                    Add(rep, known, $"Dangling reference. Form {fk} doesn't exist, referenced in {where.File}.");
+                    report.Warnings.Add($"Dangling reference. Form {fk} doesn't exist, referenced in {where.File}.");
                 }
             } else if (!masters.Contains(mod)) {
-                Add(rep, known, $"{where.File} references form {fk}, but {mod} isn't a master of {cfg.Master}.");
+                report.Warnings.Add($"{where.File} references form {fk}, but {mod} isn't a master of {cfg.Master}.");
             }
         }
-        ValidateConditions(rep, known);
-        return rep;
+        ValidateConditions(report);
+        return report;
     }
 
     // Condition parameters aren't form links
-    private static void ValidateConditions(TextReport rep, HashSet<string> known) {
-        var vars = rep.Scan.Vars;
+    private static void ValidateConditions(TextReport report) {
+        var vars = report.Scan.Vars;
         foreach (var p in vars.FormParams) {
             var fk = vars.Target(p.Raw);
             if (fk == null) {
-                Add(rep, known, $"{p.File} line {p.Line + 1} has a condition with the invalid FormID {p.Raw:X8}.");
-            } else if (fk.EndsWith(":" + vars.Self.FileName, StringComparison.OrdinalIgnoreCase) && !rep.Scan.Defs.ContainsKey(fk)) {
-                Add(rep, known, $"Dangling reference. Form {fk} doesn't exist, referenced by a condition in {p.File}.");
+                report.Warnings.Add($"{p.File} line {p.Line + 1} has a condition with the invalid FormID {p.Raw:X8}.");
+            } else if (fk.EndsWith(":" + vars.Self.FileName, StringComparison.OrdinalIgnoreCase) && !report.Scan.Defs.ContainsKey(fk)) {
+                report.Warnings.Add($"Dangling reference. Form {fk} doesn't exist, referenced by a condition in {p.File}.");
             }
         }
 
         foreach (var c in vars.VarConditions) {
             var script = vars.ScriptFor(vars.Target(c.First));
             if (script != null && vars.Vars.TryGetValue(script, out var names) && !names.ContainsKey(c.Second)) {
-                Add(rep, known, $"{c.File} has a condition referencing variable {c.Second} of {vars.Describe(script)}, which doesn't exist.");
+                report.Warnings.Add($"{c.File} has a condition referencing variable {c.Second} of {vars.Describe(script)}, which doesn't exist.");
             }
         }
     }
-
-    private static void Add(TextReport rep, HashSet<string> known, string warning) {
-        if (!known.Contains(IssueKey(warning))) {
-            rep.Warnings.Add(warning);
-        }
-    }
-
+    
     public static string IssueKey(string message) {
         var m = Regex.Match(message, @"Dangling reference[.:] (?:Form )?([0-9A-F]{6}:\S+)");
         if (m.Success) {
@@ -126,11 +120,6 @@ public static partial class TextOps {
 
         return message;
     }
-
-    public static HashSet<string> LoadKnownIssues(string path) =>
-        File.Exists(path)
-            ? File.ReadLines(path).Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith('#')).Select(IssueKey).ToHashSet()
-            : new HashSet<string>();
-
+    
     public static uint IdOf(string formKey) => Convert.ToUInt32(formKey[..6], 16);
 }
