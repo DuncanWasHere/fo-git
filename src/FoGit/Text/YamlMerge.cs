@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace FoGit;
+namespace FoGit.Text;
 
 public static partial class YamlMerge {
     [GeneratedRegex(@"^(\s*)(- )?(FormKey|NavigationMesh): (\S+)\s*$")]
@@ -24,6 +24,9 @@ public static partial class YamlMerge {
         public string Label = "";
 
         public readonly List<string> Notes = new();
+
+        // null = ask for each conflict, true = always master, false = always plugin
+        public bool? GlobalOverride { get; set; }
     }
 
     public static int RunDriver(string basePath, string currentPath, string incomingPath, string label) {
@@ -360,12 +363,46 @@ public static partial class YamlMerge {
             }
             return;
         }
+
         if (Same(b, inc)) {
-            if (cur != null) {
-                res.Lines.AddRange(cur);
+            bool? keepMaster = opt.GlobalOverride;
+
+            if (keepMaster == null) {
+                Console.WriteLine($"\n{opt.Label} {unit} has an older plugin version.");
+                Console.WriteLine("1. Keep master");
+                Console.WriteLine("2. Keep plugin");
+                Console.WriteLine("3. Always keep master");
+                Console.WriteLine("4. Always keep plugin");
+                Console.WriteLine("Esc. Abort");
+
+                while (true) {
+                    var key = Console.ReadKey(true).Key;
+
+                    if (key == ConsoleKey.Escape)
+                        throw new OperationCanceledException("Merge cancelled.");
+
+                    if (key < ConsoleKey.D1 || key > ConsoleKey.D4)
+                        continue;
+
+                    int choice = key - ConsoleKey.D0;
+                    keepMaster = choice == 1 || choice == 3;
+
+                    if (choice >= 3)
+                        opt.GlobalOverride = keepMaster;
+
+                    Console.WriteLine(key);
+                    break;
+                }
             }
 
-            opt.Notes.Add($"{opt.Label} {unit} kept the master version. The plugin has an older version because it was probably based on an older master version.");
+            var selected = keepMaster.Value ? cur : inc;
+
+            if (selected != null)
+                res.Lines.AddRange(selected);
+
+            if (keepMaster.Value)
+                opt.Notes.Add($"{opt.Label} {unit} kept the master version.");
+
             return;
         }
         MergeUnit(b, cur, inc, res, opt, unit, mergeBoth);

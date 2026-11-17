@@ -1,12 +1,13 @@
 using System.Text.Json;
+using FoGit.Repo;
 
 namespace FoGit;
 
 // FormIDs assigned to records added by a plugin last time it was merged
 public static class MergeMap {
-    private static string PathFor(Repo r, string pluginFile) => Path.Combine(r.MergeMapDir, pluginFile + ".json");
+    private static string PathFor(FoGitRepo r, string pluginFile) => Path.Combine(r.MergeMapDir, pluginFile + ".json");
 
-    public static Dictionary<uint, uint> Load(Repo r, string pluginFile) {
+    public static Dictionary<uint, uint> Load(FoGitRepo r, string pluginFile) {
         var p = PathFor(r, pluginFile);
         if (!File.Exists(p)) {
             return new();
@@ -16,13 +17,13 @@ public static class MergeMap {
         return raw.ToDictionary(kv => Convert.ToUInt32(kv.Key, 16), kv => Convert.ToUInt32(kv.Value, 16));
     }
 
-    public static void Save(Repo r, string pluginFile, Dictionary<uint, uint> map) {
+    public static void Save(FoGitRepo r, string pluginFile, Dictionary<uint, uint> map) {
         Directory.CreateDirectory(r.MergeMapDir);
         var raw = map.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString("X6"), kv => kv.Value.ToString("X6"));
         File.WriteAllText(PathFor(r, pluginFile), JsonSerializer.Serialize(raw, Json.Options));
     }
 
-    public static void ApplyRenumber(Repo r, Dictionary<uint, uint> oldToNew) {
+    public static void ApplyRenumber(FoGitRepo r, Dictionary<uint, uint> oldToNew) {
         if (oldToNew.Count == 0 || !Directory.Exists(r.MergeMapDir)) {
             return;
         }

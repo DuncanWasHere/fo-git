@@ -5,27 +5,19 @@ namespace FoGit;
 
 public sealed class RepoConfig {
     public string Master { get; set; } = "";
-
     public string SpriggitFolder { get; set; } = "";
-
     public string SpriggitPackage { get; set; } = "Spriggit.Yaml";
-
     public string SpriggitVersion { get; set; } = "0.41.0";
-
     public List<string> Masters { get; set; } = new() {
         "FalloutNV.esm", "DeadMoney.esm", "HonestHearts.esm", "OldWorldBlues.esm",
         "LonesomeRoad.esm", "GunRunnersArsenal.esm",
     };
 
-    public string PluginFolder { get; set; } = "../../overwrite";
-
-    public string KnownIssuesFile { get; set; } = "Plugins/known-issues.txt";
-
     public static RepoConfig Load(string path) {
         var cfg = JsonSerializer.Deserialize<RepoConfig>(File.ReadAllText(path), Json.Options)
                   ?? throw new UserError($"Could not read {path}");
         if (string.IsNullOrWhiteSpace(cfg.Master)) {
-            throw new UserError($"{path} is missing \"master\". Add the master plugin file name, like \"master\": \"MyMod.esm\".");
+            throw new UserError($"{path} is missing \"master\". Add the master plugin file name, e.g., \"master\": \"MyMod.esm\".");
         }
 
         if (string.IsNullOrWhiteSpace(cfg.SpriggitFolder)) {
@@ -37,8 +29,7 @@ public sealed class RepoConfig {
 }
 
 public sealed class LocalConfig {
-    public string? PluginFolder { get; set; }
-
+    public string MergePluginsFolder { get; set; } = "../../overwrite";
     public List<string> MasterSearchPaths { get; set; } = new();
 
     // Number of ESM builds to store in .fo-git/esm-cache, 0 disables caching

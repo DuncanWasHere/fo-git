@@ -4,6 +4,5 @@
   "spriggitPackage": "Spriggit.yaml",
   "spriggitVersion": "0.41.0",
   "masters": ["FalloutNV.esm", "DeadMoney.esm", "HonestHearts.esm", "OldWorldBlues.esm", "LonesomeRoad.esm", "GunRunnersArsenal.esm"],
-  "pluginFolder": "../../overwrite",
   "knownIssuesFile": "Plugins/known-issues.txt"
 }

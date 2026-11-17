@@ -1,13 +1,14 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using FoGit.Repo;
 
-namespace FoGit;
+namespace FoGit.Text;
 
 public static partial class SpriggitText {
     [GeneratedRegex(@"^(.*) - ([0-9A-F]{6}_.+)$")]
     private static partial Regex NamedSegment();
 
-    public sealed class ApplyReport {
+    public sealed class ChangeReport {
         public int Added, Changed, Removed, Moved;
         public readonly List<string> Notes = new();
         public readonly HashSet<string> Files = new(StringComparer.OrdinalIgnoreCase);
@@ -69,9 +70,9 @@ public static partial class SpriggitText {
             return m.Success ? m.Groups[2].Value : seg;
         })).ToLowerInvariant();
 
-    public static ApplyReport Apply(Repo r, string newDir, bool baseIsCurrent) {
-        var rep = new ApplyReport();
-        var curDir = r.SpriggitDir;
+    public static ChangeReport Apply(FoGitRepo r, string newDir, bool baseIsCurrent) {
+        var rep = new ChangeReport();
+        var curDir = r.TextTreeDir;
         Dictionary<string, string> Files(string dir) => Directory.Exists(dir)
             ? Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
                 .Select(f => Path.GetRelativePath(dir, f).Replace('\\', '/'))
@@ -80,24 +81,24 @@ public static partial class SpriggitText {
         var current = Files(curDir);
         var incoming = Files(newDir);
         var history = baseIsCurrent ? null : HistoryIndex.Build(r);
-        using var blobs = baseIsCurrent ? null : new GitBlobReader(r.Root);
+        using var blobs = baseIsCurrent ? null : new GitBlobReader(r.RootDir);
 
         var output = new Dictionary<string, (string? curRel, string newRel, byte[] content)>();
         var segmentNames = new Dictionary<string, string>(); // path prefix key, segment name
         var changed = new HashSet<string>();
         foreach (var (key, newRel) in incoming) {
-            var newBytes = Repo.StripCr(File.ReadAllBytes(Path.Combine(newDir, Repo.Norm(newRel))));
+            var newBytes = FoGitRepo.StripCr(File.ReadAllBytes(Path.Combine(newDir, FoGitRepo.NormalizePath(newRel))));
             current.TryGetValue(key, out var curRel);
             byte[] content = newBytes;
             bool useNewName = true;
             if (curRel != null) {
-                var curBytes = Repo.StripCr(File.ReadAllBytes(Path.Combine(curDir, Repo.Norm(curRel))));
+                var curBytes = FoGitRepo.StripCr(File.ReadAllBytes(Path.Combine(curDir, FoGitRepo.NormalizePath(curRel))));
                 if (curBytes.AsSpan().SequenceEqual(newBytes)) {
                     content = curBytes;
                 } else if (!baseIsCurrent) {
                     var cur = YamlMerge.SplitText(Encoding.UTF8.GetString(curBytes));
                     var inc = YamlMerge.SplitText(Encoding.UTF8.GetString(newBytes));
-                    var hist = history!.Versions(key, blobs!, r.Config.SpriggitFolder)
+                    var hist = history!.Versions(key, blobs!, r.RepoConfig.SpriggitFolder)
                         .Select(YamlMerge.SplitText).Where(h => !h.SequenceEqual(cur)).ToList();
                     var opt = new YamlMerge.Options { Label = curRel };
                     var merged = YamlMerge.MergeWithHistory(hist, cur, inc, opt).Lines;
@@ -125,9 +126,9 @@ public static partial class SpriggitText {
             if (changed.Contains(key)) {
                 rep.Files.Add(finalRel);
             }
-            Repo.WriteIfChanged(Path.Combine(curDir, Repo.Norm(finalRel)), content);
+            FoGitRepo.WriteIfChanged(Path.Combine(curDir, FoGitRepo.NormalizePath(finalRel)), content);
             if (curRel != null && !string.Equals(curRel, finalRel, StringComparison.Ordinal)) {
-                File.Delete(Path.Combine(curDir, Repo.Norm(curRel)));
+                File.Delete(Path.Combine(curDir, FoGitRepo.NormalizePath(curRel)));
                 rep.Moved++;
             }
         }
@@ -136,10 +137,10 @@ public static partial class SpriggitText {
                 continue;
             }
 
-            File.Delete(Path.Combine(curDir, Repo.Norm(curRel)));
+            File.Delete(Path.Combine(curDir, FoGitRepo.NormalizePath(curRel)));
             rep.Removed++;
         }
-        Repo.DeleteEmptyFolders(curDir);
+        FoGitRepo.DeleteEmptyFolders(curDir);
         return rep;
     }
 
@@ -177,10 +178,10 @@ public static partial class SpriggitText {
         private const int MaxVersionsPerFile = 30;
         private readonly Dictionary<string, List<(string commit, string path)>> _byKey = new();
 
-        public static HistoryIndex Build(Repo r) {
+        public static HistoryIndex Build(FoGitRepo r) {
             var idx = new HistoryIndex();
-            var prefix = r.Config.SpriggitFolder.TrimEnd('/') + "/";
-            var (code, output, _) = r.GitRaw("-c", "core.quotepath=off", "log", "--format=@%H", "--name-only", "--no-renames", "-n", MaxCommits.ToString(), "--", r.Config.SpriggitFolder);
+            var prefix = r.RepoConfig.SpriggitFolder.TrimEnd('/') + "/";
+            var (code, output, _) = r.GitRaw("-c", "core.quotepath=off", "log", "--format=@%H", "--name-only", "--no-renames", "-n", MaxCommits.ToString(), "--", r.RepoConfig.SpriggitFolder);
             if (code != 0) {
                 return idx;
             }

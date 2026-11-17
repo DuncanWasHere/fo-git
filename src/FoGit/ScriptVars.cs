@@ -1,3 +1,5 @@
+using FoGit.Repo;
+using FoGit.Text;
 using Mutagen.Bethesda.Plugins;
 
 namespace FoGit;
@@ -187,9 +189,9 @@ public sealed class ScriptVars {
         before.Any(kv => !after.TryGetValue(kv.Key, out var n) || !n.Equals(kv.Value, StringComparison.OrdinalIgnoreCase));
 
     // Script variables in the Spriggit text at a commit
-    public static ScriptVars AtCommit(Repo r, GitBlobReader blobs, string commit) {
+    public static ScriptVars AtCommit(FoGitRepo r, GitBlobReader blobs, string commit) {
         var vars = new ScriptVars();
-        var folder = r.Config.SpriggitFolder.TrimEnd('/');
+        var folder = r.RepoConfig.SpriggitFolder.TrimEnd('/');
         var (code, output, _) = r.GitRaw("-c", "core.quotepath=off", "ls-tree", "-r", "--name-only", commit, "--", folder + "/Scripts");
         if (code != 0) {
             return vars;
@@ -204,7 +206,7 @@ public sealed class ScriptVars {
         return vars;
     }
 
-    public static FixReport FixMerge(Repo r, IReadOnlyDictionary<uint, uint> renumbered) {
+    public static FixReport FixMerge(FoGitRepo r, IReadOnlyDictionary<uint, uint> renumbered) {
         var parents = r.HeadParents();
         if (parents.Length < 2) {
             return new FixReport();
@@ -216,7 +218,7 @@ public sealed class ScriptVars {
         }
 
         mergeBase = mergeBase.Trim();
-        var folder = r.Config.SpriggitFolder.TrimEnd('/');
+        var folder = r.RepoConfig.SpriggitFolder.TrimEnd('/');
         var current = CollisionFixer.ChangedFiles(r, mergeBase, parents[0], folder);
         var incoming = CollisionFixer.ChangedFiles(r, mergeBase, parents[1], folder);
         // Nothing to fix unless a script changed
@@ -224,7 +226,7 @@ public sealed class ScriptVars {
             return new FixReport();
         }
 
-        using var blobs = new GitBlobReader(r.Root);
+        using var blobs = new GitBlobReader(r.RootDir);
         var baseVars = AtCommit(r, blobs, mergeBase);
         var currentVars = AtCommit(r, blobs, parents[0]);
         var incomingVars = AtCommit(r, blobs, parents[1]);
@@ -232,7 +234,7 @@ public sealed class ScriptVars {
         var incomingKeys = incoming.Select(SpriggitText.Key).ToHashSet();
 
         // Renumbered forms have their old IDs on the current branch
-        var master = r.Config.Master.ToLowerInvariant();
+        var master = r.RepoConfig.Master.ToLowerInvariant();
         var oldIds = renumbered.ToDictionary(kv => $"{kv.Value:x6}", kv => $"{kv.Key:x6}");
         string Unrenumber(string s, char separator) {
             var lower = s.ToLowerInvariant();
@@ -242,7 +244,7 @@ public sealed class ScriptVars {
             return lower;
         }
 
-        return Fix(r.SpriggitDir, TextOps.Scan(r.SpriggitDir).Vars, (file, script) => {
+        return Fix(r.TextTreeDir, TextOps.Scan(r.TextTreeDir).Vars, (file, script) => {
             var key = SpriggitText.Key(file);
             var oldKey = Unrenumber(key, '_');
             bool onCurrent = currentKeys.Contains(oldKey), onIncoming = incomingKeys.Contains(key);
@@ -295,7 +297,7 @@ public sealed class ScriptVars {
         }
 
         foreach (var (file, list) in edits) {
-            var path = Path.Combine(spriggitDir, Repo.Norm(file));
+            var path = Path.Combine(spriggitDir, FoGitRepo.NormalizePath(file));
             var lines = File.ReadAllLines(path).ToList();
             foreach (var (line, insert, value) in list.OrderByDescending(x => x.line)) {
                 var l = lines[line];
@@ -307,7 +309,7 @@ public sealed class ScriptVars {
                     lines[line] = prefix + key + value;
                 }
             }
-            Repo.WriteIfChanged(path, System.Text.Encoding.UTF8.GetBytes(string.Join("\n", lines) + "\n"));
+            FoGitRepo.WriteIfChanged(path, System.Text.Encoding.UTF8.GetBytes(string.Join("\n", lines) + "\n"));
         }
 
         foreach (var (file, refs) in cur.ScriptRefs) {

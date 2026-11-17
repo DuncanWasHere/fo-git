@@ -25,10 +25,10 @@ public static class Ui {
 
     public static void Good(string msg) => Write(ConsoleColor.Green, msg);
 
-    private static void Write(ConsoleColor c, string msg) {
+    private static void Write(ConsoleColor color, string msg) {
         var old = Console.ForegroundColor;
         try {
-            Console.ForegroundColor = c;
+            Console.ForegroundColor = color;
             Console.WriteLine(msg);
         } finally {
             Console.ForegroundColor = old;
