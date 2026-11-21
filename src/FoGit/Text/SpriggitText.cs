@@ -86,6 +86,8 @@ public static partial class SpriggitText {
         var output = new Dictionary<string, (string? curRel, string newRel, byte[] content)>();
         var segmentNames = new Dictionary<string, string>(); // path prefix key, segment name
         var changed = new HashSet<string>();
+        var opt = new YamlMerge.Options();
+        
         foreach (var (key, newRel) in incoming) {
             var newBytes = FoGitRepo.StripCr(File.ReadAllBytes(Path.Combine(newDir, FoGitRepo.NormalizePath(newRel))));
             current.TryGetValue(key, out var curRel);
@@ -100,7 +102,7 @@ public static partial class SpriggitText {
                     var inc = YamlMerge.SplitText(Encoding.UTF8.GetString(newBytes));
                     var hist = history!.Versions(key, blobs!, r.RepoConfig.SpriggitFolder)
                         .Select(YamlMerge.SplitText).Where(h => !h.SequenceEqual(cur)).ToList();
-                    var opt = new YamlMerge.Options { Label = curRel };
+                    opt.Label = curRel;
                     var merged = YamlMerge.MergeWithHistory(hist, cur, inc, opt).Lines;
                     rep.Notes.AddRange(opt.Notes);
                     content = Encoding.UTF8.GetBytes(string.Join("\n", merged) + "\n");
