@@ -65,6 +65,8 @@ static partial class Cli {
 
         var command = args[0];
         var commandParams = args[1..];
+        FoGitRepo? repo = null;
+        string? buildInfoBefore = null;
         
         try {
             // Called by Git automatically during merge commits
@@ -73,7 +75,8 @@ static partial class Cli {
                     commandParams[1]);
             }
 
-            var repo = FoGitRepo.FindRepo();
+            repo = FoGitRepo.FindRepo();
+            buildInfoBefore = repo.ReadBuildInfoText();
             if (command != "hook") {
                 EnsureGitConfig(repo);
             }
@@ -96,8 +99,43 @@ static partial class Cli {
             exitCode = 3;
         }
         
+        if (repo != null) {
+            WriteSessionLog(repo, args, exitCode, buildInfoBefore);
+        }
+
         Ui.Finish();
         return exitCode;
+    }
+
+    static void WriteSessionLog(FoGitRepo repo, string[] args, int exitCode, string? buildInfoBefore) {
+        if (args[0] == "hook" && Ui.Log.Count == 0) {
+            return;
+        }
+
+        try {
+            var (headCode, head, _) = repo.GitRaw("rev-parse", "--short=7", "HEAD");
+            var (_, branch, _) = repo.GitRaw("branch", "--show-current");
+            var header = new List<string> {
+                $"fo-git {typeof(Cli).Assembly.GetName().Version?.ToString(3)} {string.Join(' ', args)}",
+                $"Time     {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+                $"HEAD     {(headCode == 0 ? head.Trim() : "none")} ({(branch.Trim().Length > 0 ? branch.Trim() : "detached")})",
+                $"Exit     {exitCode} ({Ui.Errors} error(s), {Ui.Warnings} warning(s))",
+                "",
+                "Build stamp before:",
+                buildInfoBefore ?? "  none",
+                "Build stamp after:",
+                repo.ReadBuildInfoText() ?? "  none",
+                "",
+            };
+
+            var name = args[0] == "hook" && args.Length > 1 ? $"hook-{args[1]}" : args[0];
+            var log = Path.Combine(repo.CacheDir, "logs", $"{name}-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
+            Directory.CreateDirectory(Path.GetDirectoryName(log)!);
+            File.WriteAllLines(log, header.Concat(Ui.Log));
+        } catch (Exception e) {
+            // Don't fail the command just because the log couldn't be written
+            Console.Error.WriteLine($"fo-git couldn't write the log: {e.Message}");
+        }
     }
 
     static int Status(FoGitRepo foGitRepo) {
@@ -143,10 +181,16 @@ static partial class Cli {
 
     static void Cancelled() => Ui.Info("Cancelled. Nothing changed.");
 
-    static void WriteLog(FoGitRepo foGitRepo, string name, IEnumerable<string> lines) {
-        var log = Path.Combine(foGitRepo.CacheDir, "logs", $"{name}-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
-        
-        Directory.CreateDirectory(Path.GetDirectoryName(log)!);
-        File.WriteAllLines(log, lines);
+    static void LogDetails(string title, IEnumerable<string> lines) {
+        var list = lines.ToList();
+        if (list.Count == 0) {
+            return;
+        }
+
+        Ui.Detail("");
+        Ui.Detail($"-- {title}");
+        foreach (var l in list) {
+            Ui.Detail("  " + l);
+        }
     }
 }

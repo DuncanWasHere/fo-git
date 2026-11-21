@@ -125,6 +125,10 @@ public sealed class FoGitRepo {
         var tmp = Path.Combine(tmpDir, Path.GetFileName(esmPath));
         try {
             RunSpriggit("deserialize", "-i", textDir, "-o", tmp, "-b", "0");
+            // Mutagen reorders forms under groups not in order of formid for some reason...
+            // And it just so happens this causes a crash with recent xNVSE updates!
+            // Also this fixes broken PNAM and wrong record count
+            EsmSorter.SortFile(tmp);
             CopyWithRetry(tmp, esmPath);
         } finally {
             TryDelete(tmpDir);
@@ -272,6 +276,8 @@ public sealed class FoGitRepo {
         }
     }
 
+    public string? ReadBuildInfoText() => File.Exists(BuildInfoPath) ? File.ReadAllText(BuildInfoPath).TrimEnd() : null;
+
     /// Update the build-stamp to record the current version of the ESM as synced with the current text tree (by checksums)
     public void WriteBuildInfo(string textTreeHash) {
         var esmFileInfo = new FileInfo(EsmPath);
@@ -327,10 +333,7 @@ public sealed class FoGitRepo {
     public bool RebaseInProgress() =>
         new[] { "rebase-merge", "rebase-apply" }.Any(d => Directory.Exists(Path.GetFullPath(Path.Combine(RootDir, Git("rev-parse", "--git-path", d)))));
 
-    private bool EsmMatches(BuildInfo info) {
-        var esm = new FileInfo(EsmPath);
-        return (info.EsmSize == esm.Length && info.EsmWriteTime == esm.LastWriteTimeUtc) || HashFile(EsmPath) == info.EsmHash;
-    }
+    private bool EsmMatches(BuildInfo info) => HashFile(EsmPath) == info.EsmHash;
 
     public BuildState GetBuildState() {
         var info = ReadBuildInfo();

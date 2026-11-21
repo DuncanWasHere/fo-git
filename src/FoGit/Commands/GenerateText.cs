@@ -12,13 +12,10 @@ static partial class Cli {
             return FirstGenerate(foGitRepo);
         }
 
-        switch (foGitRepo.GetBuildState()) {
-            case BuildState.UpToDate:
-                Ui.Info($"{foGitRepo.RepoConfig.Master} is already in sync with the text tree. Nothing to do.");
-                return 0;
-            case BuildState.EsmOutOfDate:
-                Ui.Info($"{foGitRepo.RepoConfig.Master} is out of date from the current text tree. Discard changes through Git instead.");
-                return 0;
+        if (foGitRepo.GetBuildState() == BuildState.EsmOutOfDate) {
+            Ui.Info(
+                $"{foGitRepo.RepoConfig.Master} is out of date from the current text tree. Discard changes through Git instead.");
+            return 0;
         }
 
         var info = foGitRepo.ReadBuildInfo();
@@ -73,6 +70,8 @@ static partial class Cli {
             Ui.Step("Updating " + foGitRepo.RepoConfig.SpriggitFolder);
             report = SpriggitText.Apply(foGitRepo, tmp, baseIsCurrent);
             Ui.Info($"  {report.Changed} changed, {report.Added} added, {report.Removed} removed record files");
+            LogDetails("Changed or added record files", report.Files.Order(StringComparer.OrdinalIgnoreCase));
+            LogDetails("Removed record files", report.RemovedFiles.Order(StringComparer.OrdinalIgnoreCase));
             ShowNotes(foGitRepo, report.Notes);
         });
         
@@ -84,7 +83,7 @@ static partial class Cli {
             return;
         }
 
-        WriteLog(foGitRepo, "gen-text", notes);
+        LogDetails("Merge notes", notes);
         var clashes = notes.Where(n => n.Contains("Used the plugin version")).ToList();
         foreach (var n in clashes) {
             Ui.Warn(n);

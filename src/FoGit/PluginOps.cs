@@ -193,6 +193,7 @@ public static class PluginOps {
                 res.Details.Add($"new {rec.FormKey} ({rec.EditorID ?? rec.GetType().Name})");
             } else {
                 res.Overrides++;
+                res.Details.Add($"edited {rec.FormKey} ({rec.EditorID ?? rec.GetType().Name})");
                 if (rec.FormKey.ModKey == masterKey && !existing.Contains(rec.FormKey)) {
                     res.Warnings.Add($"{Describe(rec)} was deleted from the master, but it's overridden in {pluginKey}. The form was undeleted, manual intervention may be required.");
                 }

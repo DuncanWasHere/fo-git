@@ -519,8 +519,15 @@ public static partial class YamlMerge {
             var baseFile = WriteTemp("base", b);
             var incFile = WriteTemp("inc", inc);
             var (code, merged, err) = Proc.Run("git", new[] { "merge-file", "-p", "--diff3", "-L", "current", "-L", "base", "-L", "incoming", curFile, baseFile, incFile }, dir);
-            if (code < 0) {
-                throw new InvalidOperationException(err);
+            // Exit code is conflict count (capped at 127)
+            if (code < 0 || code > 127) {
+                if (opt.Override) {
+                    res.Lines.AddRange(inc);
+                    opt.Notes.Add($"{opt.Label} couldn't be line merged ({err.Trim()}). Used the plugin version of {Summary(inc)}.");
+                } else {
+                    WriteConflict(cur, b, inc, res);
+                }
+                return res;
             }
 
             var lines = merged.Replace("\r\n", "\n").TrimEnd('\n').Split('\n');

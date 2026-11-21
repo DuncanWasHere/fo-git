@@ -31,8 +31,10 @@ static partial class Cli {
         if (!Directory.Exists(foGitRepo.TextTreeDir)) {
             throw new UserError($"No Spriggit files in {foGitRepo.TextTreeDir}.");
         }
+
+        var buildState = foGitRepo.GetBuildState();
         
-        if (foGitRepo.GetBuildState() == BuildState.TextOutOfDate) {
+        if (buildState == BuildState.TextOutOfDate) {
             if (!discardEdits) {
                 throw new UserError($"{foGitRepo.RepoConfig.Master} is out of sync with the text tree. The text is assumed to be out of date. Run {GenerateTextBat} to regenerate the text or {BuildEsmBat} and discard the changes.");
             }
@@ -41,7 +43,7 @@ static partial class Cli {
         }
         
         var textTreeHash = foGitRepo.TextTreeHash();
-        if (foGitRepo.RestoreCachedEsm(textTreeHash)) {
+        if (buildState != BuildState.UpToDate && foGitRepo.RestoreCachedEsm(textTreeHash)) {
             Ui.Step($"Restored {foGitRepo.RepoConfig.Master} from a previous build.");
         } else {
             Ui.Step($"Building {foGitRepo.RepoConfig.Master} from the current text tree.");

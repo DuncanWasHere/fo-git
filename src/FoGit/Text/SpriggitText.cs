@@ -12,6 +12,7 @@ public static partial class SpriggitText {
         public int Added, Changed, Removed, Moved;
         public readonly List<string> Notes = new();
         public readonly HashSet<string> Files = new(StringComparer.OrdinalIgnoreCase);
+        public readonly List<string> RemovedFiles = new();
     }
 
     // "Key: >", "Key: |+", "Key: -", etc.
@@ -27,6 +28,10 @@ public static partial class SpriggitText {
 
     public static byte[] Normalize(byte[] content) {
         var text = Encoding.UTF8.GetString(content);
+        if (text.Contains('\0')) {
+            text = text.Replace("\0", "");
+            content = Encoding.UTF8.GetBytes(text);
+        }
         if (!text.Contains("-0") && !text.Contains(": >\n")) {
             return content;
         }
@@ -141,6 +146,7 @@ public static partial class SpriggitText {
 
             File.Delete(Path.Combine(curDir, FoGitRepo.NormalizePath(curRel)));
             rep.Removed++;
+            rep.RemovedFiles.Add(curRel);
         }
         FoGitRepo.DeleteEmptyFolders(curDir);
         return rep;

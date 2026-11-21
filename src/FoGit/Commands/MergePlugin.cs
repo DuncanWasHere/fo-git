@@ -96,7 +96,8 @@ static partial class Cli {
             Ui.Info("  Nothing changed.");
         }
 
-        WriteLog(foGitRepo, $"merge-{Path.GetFileNameWithoutExtension(pluginName)}", mergeResult.Details.Concat(vars.Fixed).Concat(mergeResult.Warnings.Concat(vars.Warnings).Select(w => "warning " + w)));
+        LogDetails($"Records merged from {pluginName}", mergeResult.Details);
+        LogDetails("Script variable fixes", vars.Fixed);
         foreach (var (k, v) in mergeResult.IdMap) {
             formIdMap[k] = v;
         }
